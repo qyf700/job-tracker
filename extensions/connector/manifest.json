@@ -1,0 +1,10 @@
+{
+ "manifest_version":3,"name":"求职工作台 · 浏览器连接器","version":"0.4.1","minimum_chrome_version":"120",
+ "description":"配对本人工作台、领取已确认任务、校验冻结材料与知乎目标页；登录、验证和协议由本人处理，不自动提交。",
+ "permissions":["storage","tabs","alarms","scripting"],
+ "host_permissions":["https://job-tracker.example.invalid/*","https://app.mokahr.com/*"],
+ "background":{"service_worker":"background.mjs","type":"module"},
+ "action":{"default_popup":"popup.html","default_title":"投递连接器"},
+ "content_scripts":[{"matches":["https://job-tracker.example.invalid/*"],"js":["bridge.js"],"run_at":"document_idle","all_frames":false,"world":"ISOLATED"}],
+ "content_security_policy":{"extension_pages":"script-src 'self'; object-src 'none'"}
+}

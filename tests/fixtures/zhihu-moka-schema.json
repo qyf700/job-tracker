@@ -1,0 +1,205 @@
+{
+  "source": "https://app.mokahr.com/campus_apply/zhihu/3818#/job/276cde6c-124e-4059-b656-3d2636317338/apply",
+  "checkedOn": "2026-11-18",
+  "containsValues": false,
+  "schema": [
+    {
+      "control": "text",
+      "disabled": false,
+      "id": "moka:0",
+      "label": "推荐码",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": false,
+      "section": "申请信息"
+    },
+    {
+      "control": "file",
+      "disabled": false,
+      "id": "moka:1",
+      "label": "上传简历",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": false,
+      "section": "上传"
+    },
+    {
+      "control": "file",
+      "disabled": false,
+      "id": "moka:2",
+      "label": "上传附件",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": false,
+      "section": "上传"
+    },
+    {
+      "control": "file",
+      "disabled": false,
+      "id": "moka:3",
+      "label": "上传照片",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": false,
+      "section": "上传"
+    },
+    {
+      "control": "month",
+      "disabled": true,
+      "id": "moka:4",
+      "label": "毕业时间",
+      "occupied": true,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": true,
+      "section": "个人信息"
+    },
+    {
+      "control": "select",
+      "disabled": false,
+      "id": "moka:5",
+      "label": "是否可以实习？",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": true,
+      "section": "个人信息"
+    },
+    {
+      "control": "select",
+      "disabled": false,
+      "id": "moka:6",
+      "label": "你在哪里看到知乎的招聘信息？",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": true,
+      "section": "个人信息"
+    },
+    {
+      "control": "text",
+      "disabled": false,
+      "id": "moka:7",
+      "label": "外部推荐人「姓名+电话」",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": false,
+      "section": "个人信息"
+    },
+    {
+      "control": "text",
+      "disabled": false,
+      "id": "moka:8",
+      "label": "期望城市",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": true,
+      "section": "求职意向"
+    },
+    {
+      "control": "range",
+      "disabled": false,
+      "id": "moka:9",
+      "label": "就读时间",
+      "occupied": true,
+      "occurrence": 0,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "school",
+      "disabled": false,
+      "id": "moka:10",
+      "label": "学校名称",
+      "occupied": true,
+      "occurrence": 0,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "major",
+      "disabled": false,
+      "id": "moka:11",
+      "label": "专业名称",
+      "occupied": true,
+      "occurrence": 0,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "select",
+      "disabled": false,
+      "id": "moka:12",
+      "label": "学历",
+      "occupied": true,
+      "occurrence": 0,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "range",
+      "disabled": false,
+      "id": "moka:13",
+      "label": "就读时间",
+      "occupied": true,
+      "occurrence": 1,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "school",
+      "disabled": false,
+      "id": "moka:14",
+      "label": "学校名称",
+      "occupied": true,
+      "occurrence": 1,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "major",
+      "disabled": false,
+      "id": "moka:15",
+      "label": "专业名称",
+      "occupied": true,
+      "occurrence": 1,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "select",
+      "disabled": false,
+      "id": "moka:16",
+      "label": "学历",
+      "occupied": true,
+      "occurrence": 1,
+      "occurrences": 2,
+      "required": true,
+      "section": "教育背景"
+    },
+    {
+      "control": "checkbox",
+      "disabled": false,
+      "id": "moka:17",
+      "label": "隐私说明",
+      "occupied": false,
+      "occurrence": 0,
+      "occurrences": 1,
+      "required": false,
+      "section": "隐私说明"
+    }
+  ]
+}

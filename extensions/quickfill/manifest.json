@@ -1,0 +1,1 @@
+{"manifest_version":3,"name":"求职工作台 · 官网填表助手","version":"0.1.0","description":"导入自己的求职资料，预览并按字段填入当前招聘页面，不提交申请。","permissions":["activeTab","scripting","storage"],"action":{"default_popup":"popup.html","default_title":"官网填表助手"}}

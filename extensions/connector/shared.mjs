@@ -1,0 +1,4 @@
+export const SITE='https://job-tracker.example.invalid';
+export function secret(){const bytes=crypto.getRandomValues(new Uint8Array(32));return btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+export function targetUrl(value,id){try{const url=new URL(value);if(url.origin!=='https://app.mokahr.com'||url.pathname!=='/campus_apply/zhihu/3818'||url.username||url.password||url.hash.split('?')[0]!==`#/job/${id}/apply`)return null;return `${url.origin}${url.pathname}#/job/${id}/apply`;}catch{return null;}}
+export const labels={page_loading:'官网仍在处理，请等待完成后再核对',needs_connector:'等待领取',leased:'已领取，尚未核对页面',needs_login:'请本人登录官网',needs_verification:'请本人完成验证码',needs_consent:'请本人阅读并处理官网协议',ready_for_adapter:'目标页已核对，可预览填写与上传',adapter_running:'官网操作结果待核对',needs_manual_fields:'请核对字段和官网附件',awaiting_final_confirmation:'等待本人最终确认（未提交）',needs_review:'任务待核对，请回工作台处理',cancelled:'任务已取消'};
