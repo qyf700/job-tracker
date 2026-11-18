@@ -29,7 +29,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-export function sites({ mockAuth = true } = {}): Plugin {
+export function sites({ mockAuth = true, localCatalog = false } = {}): Plugin {
   let root = process.cwd();
   let command: "build" | "serve" = "build";
 
@@ -42,6 +42,33 @@ export function sites({ mockAuth = true } = {}): Plugin {
     configureServer(server) {
       if (!mockAuth) return;
       const secure = Boolean(server.config.server.https);
+
+      if (localCatalog && server.httpServer) {
+        const listener = server.httpServer;
+        let running = false;
+        const tick = async () => {
+          const address = listener.address();
+          if (running || !address || typeof address === "string") return;
+          running = true;
+          try {
+            const response = await fetch(`http://127.0.0.1:${address.port}/api/catalog/local-sync`, {
+              method: "POST",
+              headers: { cookie: `${localCookieName}=1` },
+              signal: AbortSignal.timeout(12 * 60_000),
+            });
+            if (!response.ok) server.config.logger.warn(`Catalog scheduler returned HTTP ${response.status}`);
+            await response.body?.cancel();
+          } catch (error) {
+            server.config.logger.warn(`Catalog scheduler: ${String(error)}`);
+          } finally {
+            running = false;
+          }
+        };
+        const timer = setInterval(() => void tick(), 60_000);
+        timer.unref();
+        listener.once("listening", () => void tick());
+        listener.once("close", () => clearInterval(timer));
+      }
 
       server.config.logger.info(`Sites local sign-in: ${localEmail}`);
       server.middlewares.use((request, response, next) => {

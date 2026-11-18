@@ -124,3 +124,12 @@ export const browserEvents=sqliteTable('browser_events',{
 export const browserActions=sqliteTable('browser_actions',{
  id:text('id').primaryKey(),ownerId:text('owner_id').notNull(),deviceId:text('device_id').notNull().references(()=>browserDevices.id),leaseId:text('lease_id').notNull().references(()=>browserLeases.id),taskId:text('task_id').notNull().references(()=>submissionTasks.id),snapshotId:text('snapshot_id').notNull().references(()=>materialSnapshots.id),kind:text('kind').notNull(),state:text('state').notNull().default('started'),resultHash:text('result_hash'),createdAt:text('created_at').notNull(),finishedAt:text('finished_at'),
 },t=>[uniqueIndex('browser_actions_task_kind').on(t.taskId,t.kind)]);
+
+export const catalogPreferences = sqliteTable('catalog_preferences', {
+  ownerId: text('owner_id').primaryKey(),
+  sourceIdsJson: text('source_ids_json').notNull().default('[]'),
+  intervalHours: integer('interval_hours').notNull().default(6),
+  filterJson: text('filter_json'),
+  filterId: text('filter_id'),
+  viewedThrough: text('viewed_through'),
+});

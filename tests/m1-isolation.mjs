@@ -29,6 +29,17 @@ try{
  worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A'],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
  worker.stdout.on('data',b=>logs+=b);worker.stderr.on('data',b=>logs+=b);
  let ready=false;for(let i=0;i<120;i++){try{await fetch(origin+'/api/health');ready=true;break;}catch{await new Promise(r=>setTimeout(r,250));}}assert.ok(ready,'workerd failed to start: '+logs);
+ const preferencePath='/api/catalog/preferences';
+ const saveFilter={action:'filter',filters:{companyId:'zhihu',q:'后端'}};
+ await call({},preferencePath,'PUT',saveFilter,401);
+ await call(A,preferencePath,'PUT',{action:'sources',settings:{sourceIds:['zhihu-moka-campus'],intervalHours:6}},403);
+ await call(A,'/api/catalog/local-sync','POST',undefined,403);
+ const ownFilter=(await data(A,preferencePath,'PUT',saveFilter)).savedFilter;
+ assert.equal((await data(A,'/api/companies')).preferences.savedFilter.id,ownFilter.id);
+ assert.equal((await data(B,'/api/companies')).preferences.savedFilter,null);
+ await call(B,preferencePath,'PUT',{action:'viewed',filterId:ownFilter.id,through:ownFilter.viewedThrough},409);
+ await call(A,'/api/jobs?companyId=zhihu&newOnly=1','GET',undefined,409);
+ assert.equal((await data(A,'/api/jobs?companyId=zhihu&q=%E5%90%8E%E7%AB%AF&newOnly=1')).newCount,0);
  const aid=randomUUID(),bid=randomUUID();
  const a=(await data(A,'/api/resumes','POST',upload(aid),201)).item;
  const b=(await data(B,'/api/resumes','POST',upload(bid),201)).item;

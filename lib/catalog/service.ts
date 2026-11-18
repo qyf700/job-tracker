@@ -6,7 +6,16 @@ import {companies,companySources,jobs,catalogSyncRuns,catalogSavedJobs,applicati
 import {sha256} from '../m1/files';
 import {CatalogError,mokaSources,readZhihuJobs} from './moka';
 import {guardedJobUpsert} from './queries.mjs';
-export function isCatalogAdmin(userId:string){return !!env.CATALOG_ADMIN_USER_ID&&env.CATALOG_ADMIN_USER_ID===userId;}
+import {filterSchema, sameFilters} from './filters';
+import {readCatalogPreferences} from './preferences';
+
+export function canScheduleCatalog(userId: string) {
+ return env.LOCAL_CATALOG === '1' && userId === 'local_seedy';
+}
+
+export function isCatalogAdmin(userId:string){
+ return canScheduleCatalog(userId) || (!!env.CATALOG_ADMIN_USER_ID && env.CATALOG_ADMIN_USER_ID === userId);
+}
 export function catalogFailure(error:unknown){
  if(error instanceof CatalogError)return Response.json({error:error.message,code:error.code},{status:error.status,headers:{'Cache-Control':'no-store'}});
  return Response.json({error:'目录服务暂时不可用，已保存的岗位不会被清空',code:'catalog_unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});
@@ -22,7 +31,7 @@ export function publicJob(row:typeof jobs.$inferSelect,detail=false,freshnessSec
 }
 export async function sourceSummary(userId:string){
  const db=getDb(),rows=await db.select().from(companySources);const runs=await db.select().from(catalogSyncRuns).orderBy(desc(catalogSyncRuns.startedAt)).limit(10);
- return {canSync:isCatalogAdmin(userId),sources:mokaSources.map(source=>({id:source.id,companyId:source.orgId,companyName:source.companyName,entryUrl:source.entryUrl,freshnessSeconds:86400,...rows.find(row=>row.id===source.id),state:rows.some(row=>row.id===source.id&&row.lastSuccessAt)?'available':'not_synced'})).map(({leaseRunId,...row})=>({...row,running:!!leaseRunId&&!!row.leaseExpiresAt&&row.leaseExpiresAt>new Date().toISOString()})),runs};
+ return {canSync:isCatalogAdmin(userId),canSchedule:canScheduleCatalog(userId),preferences:await readCatalogPreferences(userId),sources:mokaSources.map(source=>({id:source.id,companyId:source.orgId,companyName:source.companyName,entryUrl:source.entryUrl,freshnessSeconds:86400,...rows.find(row=>row.id===source.id),state:rows.some(row=>row.id===source.id&&row.lastSuccessAt)?'available':'not_synced'})).map(({leaseRunId,...row})=>({...row,running:!!leaseRunId&&!!row.leaseExpiresAt&&row.leaseExpiresAt>new Date().toISOString()})),runs};
 }
 export async function syncSource(userId:string,id:string){
  if(!isCatalogAdmin(userId))throw new CatalogError('forbidden','只有目录管理员可以触发同步',403);
@@ -56,15 +65,52 @@ export async function syncSource(userId:string,id:string){
   throw known;
  }
 }
-const querySchema=z.object({q:z.string().trim().max(100).default(''),companyId:z.string().max(100).default(''),city:z.string().max(100).default(''),programKind:z.enum(['','unknown','autumn','summer_internship','daily_internship','other']).default(''),employmentType:z.enum(['','intern','full_time','unknown']).default(''),graduationYear:z.string().regex(/^(|20\d{2})$/).default(''),availability:z.enum(['','accepting','visible_unverified','closed','stale']).default(''),limit:z.coerce.number().int().min(1).max(100).default(20),cursor:z.string().max(300).default('')}).strict();
+export async function syncDueSources(userId: string, initialOnly: boolean) {
+ const preferences = await readCatalogPreferences(userId);
+ if (!initialOnly && !preferences.intervalHours) return [];
+
+ const sources = await getDb().select().from(companySources);
+ const now = Date.now();
+ const results = [];
+ for (const id of preferences.sourceIds) {
+  const source = sources.find(item => item.id === id);
+  const lastSuccess = source?.lastSuccessAt;
+  if (lastSuccess && (initialOnly || now - Date.parse(lastSuccess) < preferences.intervalHours * 3600000)) continue;
+  if (source?.lastErrorAt && now - Date.parse(source.lastErrorAt) < 15 * 60000) continue;
+  if (source?.leaseRunId && source.leaseExpiresAt && Date.parse(source.leaseExpiresAt) > now) continue;
+  try {
+   results.push({sourceId: id, ...await syncSource(userId, id)});
+  } catch (error) {
+   if (error instanceof CatalogError && ['sync_running', 'sync_cooldown'].includes(error.code)) continue;
+   results.push({sourceId: id, state: 'failed'});
+  }
+ }
+ return results;
+}
+
+const querySchema = filterSchema.extend({
+ limit: z.coerce.number().int().min(1).max(100).default(20),
+ cursor: z.string().max(300).default(''),
+ newOnly: z.enum(['0', '1']).default('0'),
+});
 export async function listJobs(params:URLSearchParams,ownerId:string){
  const parsed=querySchema.safeParse(Object.fromEntries(params));if(!parsed.success)throw new CatalogError('invalid_filters','筛选参数无效',422);const p=parsed.data,db=getDb(),clauses=[];
+ const observedAt = new Date().toISOString();
+ const sourceHealth = await sourceSummary(ownerId);
+ const savedFilter = sourceHealth.preferences.savedFilter;
+ const activeFilter = savedFilter && sameFilters(savedFilter.filters, p) ? savedFilter : null;
+ if (p.newOnly === '1' && !activeFilter) throw new CatalogError('filter_changed', '请重新载入已保存筛选', 409);
  if(p.companyId)clauses.push(eq(jobs.companyId,p.companyId));if(p.programKind)clauses.push(eq(jobs.programKind,p.programKind));if(p.employmentType)clauses.push(eq(jobs.employmentType,p.employmentType));if(p.graduationYear)clauses.push(eq(jobs.graduationYear,Number(p.graduationYear)));
  if(p.q)clauses.push(sql`(instr(lower(${jobs.title}),lower(${p.q}))>0 OR instr(lower(${jobs.jdText}),lower(${p.q}))>0)`);
  if(p.city)clauses.push(sql`EXISTS (SELECT 1 FROM json_each(${jobs.locationsJson}) WHERE instr(value,${p.city})>0)`);
  const threshold=new Date(Date.now()-86400000).toISOString();
  if(p.availability==='stale')clauses.push(and(ne(jobs.availability,'closed'),lt(jobs.lastVerifiedAt,threshold))!);
  else if(p.availability){clauses.push(eq(jobs.availability,p.availability));if(p.availability!=='closed')clauses.push(gt(jobs.lastVerifiedAt,threshold));}
+ const isNew = activeFilter
+  ? and(gt(jobs.firstSeenAt, activeFilter.viewedThrough), sql`${jobs.firstSeenAt} <= ${observedAt}`)!
+  : null;
+ const newCount = isNew ? await db.$count(jobs, and(...clauses, isNew)) : 0;
+ if (p.newOnly === '1' && isNew) clauses.push(isNew);
  if(p.cursor){let id;try{id=z.object({id:z.string().min(1).max(150)}).strict().parse(JSON.parse(atob(p.cursor))).id;}catch{throw new CatalogError('invalid_cursor','分页标识无效',422);}clauses.push(gt(jobs.id,id));}
  const rows=await db.select().from(jobs).where(and(...clauses)).orderBy(asc(jobs.id)).limit(p.limit+1),hasMore=rows.length>p.limit,items=rows.slice(0,p.limit);
  const saved=await db.select().from(catalogSavedJobs).where(eq(catalogSavedJobs.ownerId,ownerId));
@@ -76,7 +122,7 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
   stale: sql<number>`sum(case when ${jobs.availability} <> 'closed' and ${jobs.lastVerifiedAt} < ${threshold} then 1 else 0 end)`,
   lastVerifiedAt: sql<string | null>`max(${jobs.lastVerifiedAt})`,
  }).from(companies).leftJoin(jobs, eq(jobs.companyId, companies.id)).groupBy(companies.id, companies.name);
- return {companyTotals,items:items.map(row=>({...publicJob(row),savedApplicationId:saved.find(s=>s.jobId===row.id)?.applicationId||null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth:await sourceSummary(ownerId)};
+ return {companyTotals,newCount,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.find(s=>s.jobId===row.id)?.applicationId||null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
 }
 export async function jobDetail(id:string,ownerId:string){const db=getDb(),row=(await db.select().from(jobs).where(eq(jobs.id,id)))[0];if(!row)throw new CatalogError('job_not_found','岗位不存在',404);const saved=(await db.select().from(catalogSavedJobs).where(and(eq(catalogSavedJobs.jobId,id),eq(catalogSavedJobs.ownerId,ownerId))))[0];return {...publicJob(row,true),savedApplicationId:saved?.applicationId||null};}
 export async function saveJob(id:string,ownerId:string){
