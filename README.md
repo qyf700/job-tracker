@@ -30,7 +30,7 @@ npm run dev
 
 ## 支持的招聘来源
 
-[内置来源名单](lib/catalog/sources.ts)目前包含 16 个招聘官网来源，覆盖 Moka 校招、NVIDIA 中国 Workday 实习、腾讯校招官网的「AI 全栈」和「后端开发」，以及字节跳动国际站的西雅图机器学习实习。每条职位都保留官网原文和最近核验时间，详情保留首次收录、最近重新开放和本次关闭的时间。批次与截止日期以官网信息为准。
+[内置来源名单](lib/catalog/sources.ts)目前包含 18 个招聘官网来源，覆盖 Moka 校招、NVIDIA 中国 Workday 实习、腾讯国内校招与实习（AI 全栈和后端开发）、美团北京 LongCat 和阿里巴巴杭州大模型评测的校招与实习，以及字节跳动国际站的西雅图机器学习实习。每条职位都保留官网原文和最近核验时间，详情保留首次收录、最近重新开放和本次关闭的时间。批次与截止日期以官网信息为准。
 
 | 招聘官网 | 招聘官网 |
 | --- | --- |
@@ -42,6 +42,7 @@ npm run dev
 | [NVIDIA 中国实习（Workday）](https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite?locationHierarchy1=2fcb99c455831013ea529fe151e3323c&workerSubType=0c40f6bd1d8f10adf6dae42e46d44a17) | [腾讯校招与实习（AI 全栈 / 后端开发）](https://join.qq.com/post.html) |
 | [新浪集团](https://app.mokahr.com/campus-recruitment/sina/43536) | [岚图汽车](https://app.mokahr.com/campus-recruitment/voyah/146293) |
 | [卓尔摄影](https://app.mokahr.com/campus-recruitment/kfconcept/144795) | |
+| [美团校招与实习（北京 LongCat）](https://zhaopin.meituan.com/web/campus) | [阿里巴巴校招与实习（杭州大模型评测）](https://campus-talent.alibaba.com/campus/position) |
 
 本地启动后会立刻分批核验内置来源，无需导入或关注公司。未关注的来源默认每天核验，已关注的公司默认每 6 小时更新一次。使用「关注的公司」可以调整频率或暂停全部定时更新。关掉网页后，本地服务仍会继续更新。来源同步失败时会保留上次成功的结果，并提供手动重试。
 
