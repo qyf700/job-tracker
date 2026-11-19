@@ -11,4 +11,6 @@ export const applicationInput = z.object({
   nextAction:z.string().trim().max(500).default(""),dueDate:date.nullable().default(null),
   notes:z.string().max(20000).default(""),
 }).strict();
-export const patchInput=applicationInput.partial().extend({version:z.number().int().positive()}).strict();
+export const patchInput=applicationInput.partial().extend({version:z.number().int().positive(),
+  appliedAt:z.string().datetime({offset:true}).refine(value=>Date.parse(value)<=Date.now(),"投递时间不能晚于当前时间")
+    .transform(value=>new Date(value).toISOString()).nullable().optional(),}).strict();

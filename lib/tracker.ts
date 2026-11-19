@@ -22,7 +22,16 @@ export function shanghaiDate(now = new Date()) {
   return new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
 }
 export function isActive(item: Application) { return ['saved','applied','in_progress'].includes(item.status); }
-export function isDue(item: Application, today: string) { return isActive(item) && !!item.nextAction && !!item.dueDate && item.dueDate <= today; }
+export function followUpBucket(item: Application, today: string) {
+  if (!isActive(item) || !item.nextAction.trim()) return null;
+  if (!item.dueDate) return 'undated';
+  if (item.dueDate < today) return 'overdue';
+  return item.dueDate === today ? 'today' : 'upcoming';
+}
+export function isDue(item: Application, today: string) {
+  const bucket = followUpBucket(item,today);
+  return bucket === 'overdue' || bucket === 'today';
+}
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {...init, cache:'no-store'});
   if (!response.ok) {

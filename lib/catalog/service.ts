@@ -2,7 +2,7 @@ import {env} from 'cloudflare:workers';
 import {and,asc,desc,eq,gt,inArray,isNotNull,isNull,lt,lte,ne,or,sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {getDb} from '../../db';
-import {companies,companySources,jobs,catalogSyncRuns,catalogSavedJobs,applications} from '../../db/schema';
+import {companies,companySources,jobs,catalogSyncRuns,catalogSavedJobs,applications,interviews} from '../../db/schema';
 import {sha256} from '../m1/files';
 import {CatalogError,mokaSources,readZhihuJobs} from './moka';
 import {guardedJobUpsert} from './queries.mjs';
@@ -147,6 +147,19 @@ function jobConditions(filters: CatalogFilters, threshold: string) {
  return clauses;
 }
 
+function applicationProgress(ownerId:string,jobIds:string[]){
+ return getDb().select({
+  jobId:catalogSavedJobs.jobId,applicationId:applications.id,status:applications.status,
+  appliedAt:applications.appliedAt,archivedAt:applications.archivedAt,
+  hasInterview:sql<boolean>`exists (select 1 from ${interviews}
+   where ${interviews.ownerId} = ${ownerId}
+     and ${interviews.applicationId} = ${applications.id}
+     and ${interviews.kind} in ('interview','hr') and ${interviews.state} <> 'cancelled')`.mapWith(Boolean),
+ }).from(catalogSavedJobs)
+  .innerJoin(applications,and(eq(applications.id,catalogSavedJobs.applicationId),eq(applications.ownerId,ownerId)))
+  .where(and(eq(catalogSavedJobs.ownerId,ownerId),
+   sql`${catalogSavedJobs.jobId} in (select value from json_each(${JSON.stringify(jobIds)}))`));
+}
 export async function listJobs(params:URLSearchParams,ownerId:string){
  const parsed = querySchema.safeParse(Object.fromEntries(params));
  if (!parsed.success) throw new CatalogError('invalid_filters','筛选参数无效',422);
@@ -170,7 +183,7 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
  }
  if(p.cursor){let id;try{id=z.object({id:z.string().min(1).max(150)}).strict().parse(JSON.parse(atob(p.cursor))).id;}catch{throw new CatalogError('invalid_cursor','分页标识无效',422);}clauses.push(gt(jobs.id,id));}
  const rows=await db.select().from(jobs).where(and(...clauses)).orderBy(asc(jobs.id)).limit(p.limit+1),hasMore=rows.length>p.limit,items=rows.slice(0,p.limit);
- const saved=await db.select().from(catalogSavedJobs).where(eq(catalogSavedJobs.ownerId,ownerId));
+ const saved=new Map((await applicationProgress(ownerId,items.map(job=>job.id))).map(row=>[row.jobId,row]));
  // Company totals are independent of pagination and search filters.
  const companyTotals = await db.select({
   companyId: companies.id,
@@ -179,9 +192,9 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
   stale: sql<number>`sum(case when ${jobs.availability} <> 'closed' and ${jobs.lastVerifiedAt} < ${threshold} then 1 else 0 end)`,
   lastVerifiedAt: sql<string | null>`max(${jobs.lastVerifiedAt})`,
  }).from(companies).leftJoin(jobs, eq(jobs.companyId, companies.id)).groupBy(companies.id, companies.name);
- return {companyTotals,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.find(s=>s.jobId===row.id)?.applicationId||null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
+ return {companyTotals,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.get(row.id)?.applicationId??null,applicationProgress:saved.get(row.id)??null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
 }
-export async function jobDetail(id:string,ownerId:string){const db=getDb(),row=(await db.select().from(jobs).where(eq(jobs.id,id)))[0];if(!row)throw new CatalogError('job_not_found','岗位不存在',404);const saved=(await db.select().from(catalogSavedJobs).where(and(eq(catalogSavedJobs.jobId,id),eq(catalogSavedJobs.ownerId,ownerId))))[0];return {...publicJob(row,true),savedApplicationId:saved?.applicationId||null};}
+export async function jobDetail(id:string,ownerId:string){const db=getDb(),row=(await db.select().from(jobs).where(eq(jobs.id,id)))[0];if(!row)throw new CatalogError('job_not_found','岗位不存在',404);const [saved]=await applicationProgress(ownerId,[id]);return {...publicJob(row,true),savedApplicationId:saved?.applicationId??null,applicationProgress:saved??null};}
 export async function saveJob(id:string,ownerId:string){
  const job=await jobDetail(id,ownerId);if(job.savedApplicationId)return {applicationId:job.savedApplicationId,replayed:true};
  const digest=await sha256(new TextEncoder().encode(`${ownerId}\0${id}`));const hex=digest.slice(0,12)+'5'+digest.slice(13,16)+'a'+digest.slice(17,32),appId=[hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');

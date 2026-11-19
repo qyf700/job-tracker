@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {interviewInput,interviewUpdate,overlaps,localDateTime} from '../lib/interviews.ts';
 import {calendar,escapeIcs,foldIcs} from '../lib/calendar.ts';
+import {followUpBucket,isDue} from '../lib/tracker.ts';
 import {profileSchema,profileFields} from '../lib/profile.ts';
 import '../extensions/quickfill/rules.js';
 const Rules=globalThis.JobFillRules;
@@ -44,4 +45,17 @@ test('autofill matches unique exact labels, preserves ambiguity for manual mappi
  assert.equal(Rules.guessField({label:'电子邮箱'},fields),'email');
  assert.match(Rules.detectSite('jobs.bytedance.com'),/未完成实测/);
  assert.match(Rules.detectSite('jobs.bytedance.com.evil.example'),/其他网站/);
+});
+
+test('follow-up filters group active actions by Shanghai calendar day',()=>{
+ const today='2026-11-19';
+ const entry={status:'in_progress',nextAction:'准备一面'};
+ assert.equal(followUpBucket({...entry,dueDate:null},today),'undated');
+ assert.equal(followUpBucket({...entry,dueDate:'2026-11-18'},today),'overdue');
+ assert.equal(followUpBucket({...entry,dueDate:today},today),'today');
+ assert.equal(followUpBucket({...entry,dueDate:'2026-11-20'},today),'upcoming');
+ assert.equal(followUpBucket({...entry,status:'closed',dueDate:today},today),null);
+ assert.equal(followUpBucket({...entry,nextAction:' ',dueDate:today},today),null);
+ assert.equal(isDue({...entry,dueDate:today},today),true);
+ assert.equal(isDue({...entry,dueDate:null},today),false);
 });

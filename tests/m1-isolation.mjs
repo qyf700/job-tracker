@@ -114,7 +114,23 @@ try{
   const application=async()=> (await data(local,'/api/applications')).items.find(item=>item.id===saved.applicationId);
   const beforeClose=await application();
   assert.equal(beforeClose.officialJob.availability,detail.availability);
-  const inProgress=await data(local,'/api/applications/'+saved.applicationId,'PATCH',{version:beforeClose.version,status:'in_progress'});
+  const jobPath='/api/jobs/'+encodeURIComponent(detail.id);
+  const appPath='/api/applications/'+saved.applicationId;
+  assert.equal((await data(local,jobPath)).applicationProgress.status,'saved');
+  assert.equal((await data(B,jobPath)).applicationProgress,null);
+  const applied=await data(local,appPath,'PATCH',{version:beforeClose.version,status:'applied',appliedAt:'2026-01-15T09:30:00+08:00'});
+  assert.equal(applied.appliedAt,'2026-01-15T01:30:00.000Z');
+  await call(local,appPath,'PATCH',{version:applied.version,appliedAt:'9999-01-01T01:00:00Z'},422);
+  await call(local,appPath,'PATCH',{version:applied.version,appliedAt:null},422);
+  await call(local,appPath,'PATCH',{version:beforeClose.version,appliedAt:'2026-01-15T02:00:00Z'},409);
+  const listed=await data(local,'/api/jobs?companyId=xunlei&limit=100');
+  assert.equal(listed.items.find(job=>job.id===detail.id).applicationProgress.status,'applied');
+  await data(local,'/api/interviews','POST',{applicationId:saved.applicationId,kind:'interview',round:'一面',startsAt:'2026-01-20T03:00:00Z',endsAt:'2026-01-20T04:00:00Z'},201);
+  const inProgress=await data(local,appPath,'PATCH',{version:applied.version,status:'in_progress',nextAction:'准备一面'});
+  const interviewProgress=(await data(local,jobPath)).applicationProgress;
+  assert.equal(interviewProgress.status,'in_progress');
+  assert.equal(interviewProgress.hasInterview,true);
+  assert.equal(inProgress.appliedAt,applied.appliedAt);
   // Change the status of the real catalog row in this temporary D1 database only.
   assert.match(detail.id,/^[a-z0-9:_-]+$/i);
   await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--command',
