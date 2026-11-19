@@ -43,7 +43,7 @@ try{
  schema.splice(migrations.findIndex(x=>x.startsWith('0008_')),0,legacySettings);
  await writeFile(dir+'/schema.sql',schema.join('\n'));
  await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--file',dir+'/schema.sql']);
- worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A',...(process.env.CATALOG_LOCAL_LIVE==='1'?['--var','LOCAL_CATALOG:1']:[])],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
+ worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A',...((process.env.CATALOG_LOCAL_LIVE==='1'||process.env.CATALOG_DISCOVERY_LIVE==='1')?['--var','LOCAL_CATALOG:1']:[])],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
  worker.stdout.on('data',b=>logs+=b);worker.stderr.on('data',b=>logs+=b);
  let ready=false;for(let i=0;i<120;i++){try{await fetch(origin+'/api/health');ready=true;break;}catch{await new Promise(r=>setTimeout(r,250));}}assert.ok(ready,'workerd failed to start: '+logs);
  const preferencePath='/api/catalog/preferences';
@@ -72,6 +72,32 @@ try{
  assert.equal(migrated.activeFilterId,legacyFilterId);
  assert.equal(migrated.savedFilters[0].name,'原有筛选');
  assert.equal(migrated.savedFilters[0].viewedThrough,'2000-01-01T00:00:00.000Z');
+ if(process.env.CATALOG_DISCOVERY_LIVE==='1'){
+  await data(local,preferencePath,'PUT',{action:'sources',settings:{sourceIds:[],intervalHours:6}});
+  const empty=await data(local,'/api/jobs?limit=1');
+  assert.equal(empty.companyTotals.length,0);
+  assert.deepEqual(empty.sourceHealth.preferences.sourceIds,[]);
+  const batch=await data(local,'/api/catalog/local-sync','POST');
+  assert.equal(batch.runs.length,2);
+  assert.ok(batch.runs.every(run=>run.state==='succeeded'),JSON.stringify(batch));
+  const overview=await data(local,'/api/jobs?limit=1');
+  assert.equal(overview.items.length,1);
+  for(const run of batch.runs){
+   const source=overview.sourceHealth.sources.find(item=>item.id===run.sourceId);
+   const company=overview.companyTotals.find(item=>item.companyId===source.companyId);
+   assert.equal(source.selected,false);
+   assert.equal(Date.parse(source.nextUpdateAt)-Date.parse(source.lastSuccessAt),86400000);
+   assert.equal(company.open,run.seenCount);
+   assert.equal(company.recent,company.open);
+   assert.equal(company.matching,source.companyId==='zhihu'?company.open:0);
+  }
+  const viewed=await data(local,'/api/jobs?limit=1&discoverySince='+encodeURIComponent(overview.observedAt));
+  assert.ok(viewed.companyTotals.every(company=>company.recent===0));
+  assert.equal(viewed.companyTotals.reduce((sum,company)=>sum+company.open,0),batch.runs.reduce((sum,run)=>sum+run.seenCount,0));
+  await data(local,preferencePath,'PUT',{action:'sources',settings:{sourceIds:[],intervalHours:0}});
+  assert.deepEqual((await data(local,'/api/catalog/local-sync','POST')).runs,[]);
+  console.log('Automatic discovery:',JSON.stringify(batch.runs.map(({sourceId,seenCount})=>({sourceId,seenCount}))));
+ }
  if(process.env.CATALOG_LOCAL_LIVE==='1'){
   const added=await data(local,preferencePath,'PUT',{action:'create',name:'迅雷',filters:{companyId:'xunlei'}});
   const secondId=added.activeFilterId;
@@ -94,7 +120,7 @@ try{
   assert.equal(multiple.items.length,first.runs.reduce((total,run)=>total+run.seenCount,0));
   const scheduled=updated.sourceHealth.sources.filter(source=>source.selected);
   assert.ok(scheduled.every(source=>source.latestRun?.state==='succeeded'&&Date.parse(source.nextUpdateAt)-Date.parse(source.lastSuccessAt)===6*3600000));
-  assert.deepEqual((await data(local,'/api/catalog/local-sync','POST')).runs,[]);
+  assert.deepEqual((await data(local,'/api/catalog/local-sync?initial=1','POST')).runs,[]);
   const failedRunId=randomUUID();
   const failureTime=new Date().toISOString();
   await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--command',
@@ -105,7 +131,7 @@ try{
   const beforeRetry=(await data(local,'/api/companies')).sources.find(source=>source.id==='xunlei-moka-campus');
   assert.equal(beforeRetry.latestRun.state,'failed');
   assert.equal(Date.parse(beforeRetry.nextUpdateAt)-Date.parse(failureTime),15*60000);
-  assert.deepEqual((await data(local,'/api/catalog/local-sync','POST')).runs,[]);
+  assert.deepEqual((await data(local,'/api/catalog/local-sync?initial=1','POST')).runs,[]);
   const retried=await data(local,'/api/catalog/sources/xunlei-moka-campus/sync','POST');
   assert.equal(retried.state,'succeeded');
   const afterRetry=await data(local,`/api/jobs?companyId=xunlei&filterId=${secondId}&newOnly=1`);
@@ -141,6 +167,37 @@ try{
   assert.equal(afterClose.appliedAt,inProgress.appliedAt);
   assert.deepEqual((await data(B,'/api/applications')).items,[]);
   console.log('Verified real sources:',JSON.stringify(first.runs.map(({sourceId,seenCount})=>({sourceId,seenCount}))));
+ }
+ if(process.env.CATALOG_NVIDIA_LIVE==='1'){
+  const sourceId='nvidia-workday-china-internships';
+  const health=await data(A,'/api/companies');
+  assert.equal(health.sources.find(source=>source.id===sourceId).label,'Workday 中国实习');
+  const run=await data(A,'/api/catalog/sources/'+sourceId+'/sync','POST');
+  assert.equal(run.state,'succeeded');
+  assert.ok(run.seenCount>20,'The live source must span multiple pages for this check');
+  const directory=[];
+  let cursor;
+  do {
+   const query=new URLSearchParams({companyId:'nvidia',limit:'20',...(cursor?{cursor}:{})});
+   const page=await data(A,'/api/jobs?'+query);
+   directory.push(...page.items);
+   cursor=page.nextCursor;
+   assert.ok(directory.length<=run.seenCount);
+  } while(cursor);
+  assert.equal(directory.length,run.seenCount);
+  assert.equal(new Set(directory.map(job=>job.externalJobId)).size,run.seenCount);
+  assert.ok(directory.every(job=>job.employmentType==='intern'));
+  for(const job of [directory[0],directory.at(-1)]){
+   const detail=await data(A,'/api/jobs/'+encodeURIComponent(job.id));
+   assert.ok(detail.jdText.length>50);
+   assert.equal(new URL(detail.originalUrl).hostname,'nvidia.wd5.myworkdayjobs.com');
+   assert.equal(detail.availability,detail.evidence.posted&&detail.evidence.canApply?'accepting':'closed');
+  }
+  const stored=await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--json',
+   '--command',"SELECT availability, count(*) AS count FROM jobs WHERE source_id='nvidia-workday-china-internships' GROUP BY availability"]);
+  const counts=JSON.parse(stored)[0].results;
+  assert.equal(counts.reduce((sum,row)=>sum+row.count,0),run.seenCount);
+  console.log('NVIDIA directory D1 counts:',JSON.stringify(counts));
  }
  const aid=randomUUID(),bid=randomUUID();
  const a=(await data(A,'/api/resumes','POST',upload(aid),201)).item;

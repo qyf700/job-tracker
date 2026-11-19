@@ -3,11 +3,12 @@ import {z} from 'zod';
 import {getDb} from '../../db';
 import {catalogFilters, catalogPreferences} from '../../db/schema';
 import {filterSchema} from './filters';
-import {CatalogError, mokaSources} from './moka';
+import {CatalogError} from './moka';
+import {catalogSources} from './sources';
 
 const sourceSettings = z.object({
-  sourceIds: z.array(z.string()).max(mokaSources.length).refine(ids =>
-    new Set(ids).size === ids.length && ids.every(id => mokaSources.some(source => source.id === id))
+  sourceIds: z.array(z.string()).max(catalogSources.length).refine(ids =>
+    new Set(ids).size === ids.length && ids.every(id => catalogSources.some(source => source.id === id))
   ),
   intervalHours: z.number().int().min(0).max(168),
 }).strict();
@@ -28,7 +29,7 @@ export async function readCatalogSettings(ownerId: string) {
   const [row] = await getDb().select().from(catalogPreferences).where(eq(catalogPreferences.ownerId, ownerId));
   const ids = row ? z.array(z.string()).parse(JSON.parse(row.sourceIdsJson)) : [];
   return {
-    sourceIds: ids.filter(id => mokaSources.some(source => source.id === id)),
+    sourceIds: ids.filter(id => catalogSources.some(source => source.id === id)),
     intervalHours: row?.intervalHours ?? 6,
     activeFilterId: row?.activeFilterId ?? null,
   };

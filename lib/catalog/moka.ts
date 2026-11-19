@@ -3,9 +3,10 @@ export const SOURCE_ID='zhihu-moka-campus';
 export const ENTRY_URL='https://app.mokahr.com/campus_apply/zhihu/3818';
 export const zhihuSource={id:SOURCE_ID,orgId:'zhihu',siteId:'3818',companyName:'知乎',entryUrl:ENTRY_URL};
 export const mokaSources=[
+ zhihuSource,{id:'xunlei-moka-campus',orgId:'xunlei',siteId:'26600',companyName:'迅雷',entryUrl:'https://app.mokahr.com/campus_apply/xunlei/26600'},
  {id:'ztgame-moka-campus',orgId:'ztgame',siteId:'92438',companyName:'巨人网络',entryUrl:'https://app.mokahr.com/campus-recruitment/ztgame/92438'},
  {id:'tuhu-moka-campus',orgId:'tuhu',siteId:'28398',companyName:'途虎养车',entryUrl:'https://app.mokahr.com/campus-recruitment/tuhu/28398'},
- {id:'step-moka-campus',orgId:'step',siteId:'94905',companyName:'阶跃星辰',entryUrl:'https://app.mokahr.com/campus-recruitment/step/94905'},zhihuSource,{id:'xunlei-moka-campus',orgId:'xunlei',siteId:'26600',companyName:'迅雷',entryUrl:'https://app.mokahr.com/campus_apply/xunlei/26600'},{id:'luster-moka-campus',orgId:'lusterinc',siteId:'44882',companyName:'凌云光',entryUrl:'https://app.mokahr.com/campus_apply/lusterinc/44882'},
+ {id:'step-moka-campus',orgId:'step',siteId:'94905',companyName:'阶跃星辰',entryUrl:'https://app.mokahr.com/campus-recruitment/step/94905'},{id:'luster-moka-campus',orgId:'lusterinc',siteId:'44882',companyName:'凌云光',entryUrl:'https://app.mokahr.com/campus_apply/lusterinc/44882'},
  {id:'shengqu-moka-campus',orgId:'shengqu',siteId:'96336',companyName:'盛趣游戏',entryUrl:'https://app.mokahr.com/campus-recruitment/shengqu/96336'},
  {id:'agora-moka-campus',orgId:'agora',siteId:'4789',companyName:'声网',entryUrl:'https://app.mokahr.com/campus_apply/agora/4789'},
  {id:'sohu-moka-campus',orgId:'sohu',siteId:'5682',companyName:'搜狐',entryUrl:'https://app.mokahr.com/campus-recruitment/sohu/5682'},
@@ -52,7 +53,7 @@ export function normalizeJob(raw:unknown,source=zhihuSource){
   originalUrl:`${source.entryUrl}#/job/${job.id}`,applyUrl:`${source.entryUrl}#/job/${job.id}/apply`,deadlineAt:null,publishedAt:job.publishedAt?new Date(job.publishedAt.includes('Z')||/[+-]\d\d:\d\d$/.test(job.publishedAt)?job.publishedAt:job.publishedAt+'+08:00').toISOString():null,
   availability:job.status==='open'?'accepting':'closed',evidence:{sourceStatus:job.status,endpoint:ORIGIN+API+'job',orgId:source.orgId,siteId:source.siteId,classification:programKind==='unknown'?'招聘批次未知；职位名称和官网栏目按原文保留':'职位名称或官网栏目明确标注批次',graduationEvidence:graduation?`标题标注${graduation}；两位年份不补齐世纪`:null}};
 }
-async function boundedText(response:Response){
+export async function boundedText(response:Response){
  const reader=response.body?.getReader();if(!reader)throw new CatalogError('source_empty','官网响应为空');const chunks:Uint8Array[]=[];let length=0;
  try{while(true){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>2*1024*1024){await reader.cancel();throw new CatalogError('source_too_large','官网响应超过同步上限');}chunks.push(value);}}finally{reader.releaseLock();}
  const bytes=new Uint8Array(length);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}return new TextDecoder().decode(bytes);

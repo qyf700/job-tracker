@@ -4,7 +4,8 @@ import {z} from 'zod';
 import {getDb} from '../../db';
 import {companies,companySources,jobs,catalogSyncRuns,catalogSavedJobs,applications,interviews} from '../../db/schema';
 import {sha256} from '../m1/files';
-import {CatalogError,mokaSources,readZhihuJobs} from './moka';
+import {CatalogError} from './moka';
+import {catalogSources} from './sources';
 import {guardedJobUpsert} from './queries.mjs';
 import {filterSchema, sameFilters, type CatalogFilters} from './filters';
 import {readCatalogPreferences, readCatalogSettings} from './preferences';
@@ -22,13 +23,13 @@ export function catalogFailure(error:unknown){
  if(error instanceof CatalogError)return Response.json({error:error.message,code:error.code},{status:error.status,headers:{'Cache-Control':'no-store'}});
  return Response.json({error:'目录服务暂时不可用，已保存的岗位不会被清空',code:'catalog_unavailable'},{status:503,headers:{'Cache-Control':'no-store'}});
 }
-async function ensureSource(source:typeof mokaSources[number]){
+async function ensureSource(source:typeof catalogSources[number]){
  const db=getDb(),now=new Date().toISOString();
- await db.batch([db.insert(companies).values({id:source.orgId,name:source.companyName,officialCareersUrl:source.entryUrl,createdAt:now,updatedAt:now}).onConflictDoNothing(),db.insert(companySources).values({id:source.id,companyId:source.orgId,adapterKey:'moka-public-v1',entryUrl:source.entryUrl}).onConflictDoNothing()]);
+ await db.batch([db.insert(companies).values({id:source.orgId,name:source.companyName,officialCareersUrl:source.entryUrl,createdAt:now,updatedAt:now}).onConflictDoNothing(),db.insert(companySources).values({id:source.id,companyId:source.orgId,adapterKey:source.adapterKey,entryUrl:source.entryUrl}).onConflictDoNothing()]);
 }
 export function publicJob(row:typeof jobs.$inferSelect,detail=false,freshnessSeconds=86400){
  const {locationsJson,evidenceJson,jdText,contentHash,lastSeenRunId,...value}=row;
- return {...value,companyName:mokaSources.find(source=>source.orgId===row.companyId)?.companyName??row.companyId,locations:JSON.parse(locationsJson) as string[],availability:publicJobStatus(row,freshnessSeconds).availability,...(detail?{jdText,evidence:JSON.parse(evidenceJson),contentHash}:{})};
+ return {...value,companyName:catalogSources.find(source=>source.orgId===row.companyId)?.companyName??row.companyId,locations:JSON.parse(locationsJson) as string[],availability:publicJobStatus(row,freshnessSeconds).availability,...(detail?{jdText,evidence:JSON.parse(evidenceJson),contentHash}:{})};
 }
 export async function sourceSummary(userId:string){
  const db = getDb();
@@ -41,15 +42,16 @@ export async function sourceSummary(userId:string){
  const latest = latestIds.length ? await db.select().from(catalogSyncRuns).where(inArray(catalogSyncRuns.id, latestIds)) : [];
  const canSchedule = canScheduleCatalog(userId);
  const now = Date.now();
- const sources = mokaSources.map(source => {
+ const sources = catalogSources.map(source => {
   const row = rows.find(item => item.id === source.id);
   const selected = canSchedule && preferences.sourceIds.includes(source.id);
-  const next = selected ? nextSourceSync(row, preferences.intervalHours, now) : null;
+  const interval = discoveryInterval(preferences.intervalHours, selected);
+  const next = canSchedule ? nextSourceSync(row, interval, now) : null;
   const running = !!row?.leaseRunId && !!row.leaseExpiresAt && Date.parse(row.leaseExpiresAt) > now;
   const lastRun = latest.find(run => run.id === row?.lastRunId);
   const runningRun = running ? latest.find(run => run.id === row?.leaseRunId) : undefined;
   return {
-   id: source.id, companyId: source.orgId, companyName: source.companyName, entryUrl: source.entryUrl,
+   id: source.id, companyId: source.orgId, companyName: source.companyName, entryUrl: source.entryUrl, label: source.label,
    freshnessSeconds: row?.freshnessSeconds ?? 86400, state: row?.lastSuccessAt ? 'available' : 'not_synced',
    lastSuccessAt: row?.lastSuccessAt ?? null, lastErrorAt: row?.lastErrorAt ?? null,
    lastErrorMessage: row?.lastErrorMessage ?? null, lastErrorCode: row?.lastErrorCode ?? null,
@@ -63,7 +65,7 @@ export async function sourceSummary(userId:string){
 }
 export async function syncSource(userId:string,id:string){
  if(!isCatalogAdmin(userId))throw new CatalogError('forbidden','只有目录管理员可以触发同步',403);
- const source=mokaSources.find(candidate=>candidate.id===id);
+ const source=catalogSources.find(candidate=>candidate.id===id);
  if(!source)throw new CatalogError('source_not_found','来源不存在',404);
  await ensureSource(source);const db=getDb(),runId=crypto.randomUUID(),startedAt=new Date().toISOString();
  const lease=await db.update(companySources).set({leaseRunId:runId,leaseExpiresAt:new Date(Date.now()+120000).toISOString()}).where(and(eq(companySources.id,id),or(isNull(companySources.leaseRunId),lt(companySources.leaseExpiresAt,startedAt)))).returning();
@@ -72,7 +74,7 @@ export async function syncSource(userId:string,id:string){
  if(lease[0].lastSuccessAt&&Date.now()-Date.parse(lease[0].lastSuccessAt)<60000){await db.update(companySources).set({leaseRunId:null,leaseExpiresAt:null}).where(and(eq(companySources.id,id),eq(companySources.leaseRunId,runId)));throw new CatalogError('sync_cooldown','刚刚同步成功，请一分钟后再同步',429);}
  await db.insert(catalogSyncRuns).values({id:runId,sourceId:id,state:'running',startedAt});
  try{
-  const normalized=await readZhihuJobs(fetch,source),finishedAt=new Date().toISOString();
+  const normalized=await source.read(),finishedAt=new Date().toISOString();
   const rows=await Promise.all(normalized.map(async job=>({
    id:`${source.id}:${job.externalJobId}`,sourceId:id,externalJobId:job.externalJobId,companyId:source.orgId,programId:null,
    title:job.title,department:job.department,locationsJson:JSON.stringify(job.locations),employmentType:job.employmentType,programKind:job.programKind,graduationYear:job.graduationYear,graduationLabel:job.graduationLabel,sourceCategory:job.sourceCategory,
@@ -93,6 +95,10 @@ export async function syncSource(userId:string,id:string){
   throw known;
  }
 }
+function discoveryInterval(followedInterval: number, followed: boolean) {
+ return followed || !followedInterval ? followedInterval : 24;
+}
+
 export async function syncDueSources(userId: string, initialOnly: boolean) {
  const preferences = await readCatalogSettings(userId);
  if (!initialOnly && !preferences.intervalHours) return [];
@@ -100,10 +106,17 @@ export async function syncDueSources(userId: string, initialOnly: boolean) {
  const sources = await getDb().select().from(companySources);
  const now = Date.now();
  const results = [];
- for (const id of preferences.sourceIds) {
-  const source = sources.find(item => item.id === id);
-  const next = nextSourceSync(source, preferences.intervalHours, now, initialOnly);
-  if (next === null || next > now) continue;
+ const knownSources = new Map(sources.map(source=>[source.id,source]));
+ const followedIds = new Set(preferences.sourceIds);
+ const candidates = catalogSources.flatMap(({id})=>{
+  const followed = followedIds.has(id);
+  if(initialOnly && !followed)return [];
+  const source = knownSources.get(id);
+  const next = nextSourceSync(source, discoveryInterval(preferences.intervalHours,followed), now, initialOnly);
+  return next!==null && next<=now ? [{id,followed,next}] : [];
+ }).sort((a,b)=>Number(b.followed)-Number(a.followed)||a.next-b.next);
+ // Keep background discovery bounded. The next tick handles the remaining companies.
+ for (const {id} of initialOnly ? candidates : candidates.slice(0,2)) {
   try {
    results.push({sourceId: id, ...await syncSource(userId, id)});
   } catch (error) {
@@ -119,6 +132,7 @@ const querySchema = filterSchema.extend({
  cursor: z.string().max(300).default(''),
  newOnly: z.enum(['0', '1']).default('0'),
  filterId: z.string().uuid().optional(),
+ discoverySince: z.string().datetime().optional(),
 });
 function searchTerms(value: string) {
  return [...new Set(value.split(/[,，]/).map(term => term.trim()).filter(Boolean))];
@@ -184,15 +198,28 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
  if(p.cursor){let id;try{id=z.object({id:z.string().min(1).max(150)}).strict().parse(JSON.parse(atob(p.cursor))).id;}catch{throw new CatalogError('invalid_cursor','分页标识无效',422);}clauses.push(gt(jobs.id,id));}
  const rows=await db.select().from(jobs).where(and(...clauses)).orderBy(asc(jobs.id)).limit(p.limit+1),hasMore=rows.length>p.limit,items=rows.slice(0,p.limit);
  const saved=new Map((await applicationProgress(ownerId,items.map(job=>job.id))).map(row=>[row.jobId,row]));
- // Company totals are independent of pagination and search filters.
+ const discoverySince = p.discoverySince && p.discoverySince<=observedAt
+  ? p.discoverySince : new Date(Date.parse(observedAt)-7*86400000).toISOString();
+ const open = and(eq(jobs.availability,'accepting'),sql`${jobs.lastVerifiedAt} >= ${threshold}`)!;
+ const recentlyOpened = and(open,or(
+  and(gt(jobs.firstSeenAt,discoverySince),lte(jobs.firstSeenAt,observedAt)),
+  and(gt(jobs.reopenedAt,discoverySince),lte(jobs.reopenedAt,observedAt)),
+ ))!;
+ const matchesSaved = selected ? and(open,...jobConditions(selected.filters,threshold))! : null;
+ // Company counts are independent of job pagination and temporary search filters.
  const companyTotals = await db.select({
   companyId: companies.id,
   companyName: companies.name,
-  open: sql<number>`sum(case when ${jobs.availability} = 'accepting' and ${jobs.lastVerifiedAt} >= ${threshold} then 1 else 0 end)`,
+  open: sql<number>`sum(case when ${open} then 1 else 0 end)`,
+  intern: sql<number>`sum(case when ${open} and ${jobs.employmentType} = 'intern' then 1 else 0 end)`,
+  autumn: sql<number>`sum(case when ${open} and ${jobs.programKind} = 'autumn' then 1 else 0 end)`,
+  recent: sql<number>`sum(case when ${recentlyOpened} then 1 else 0 end)`,
+  matching: sql<number>`sum(case when ${matchesSaved??sql`0`} then 1 else 0 end)`,
+  firstSeenAt: sql<string | null>`min(${jobs.firstSeenAt})`,
   stale: sql<number>`sum(case when ${jobs.availability} <> 'closed' and ${jobs.lastVerifiedAt} < ${threshold} then 1 else 0 end)`,
   lastVerifiedAt: sql<string | null>`max(${jobs.lastVerifiedAt})`,
  }).from(companies).leftJoin(jobs, eq(jobs.companyId, companies.id)).groupBy(companies.id, companies.name);
- return {companyTotals,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.get(row.id)?.applicationId??null,applicationProgress:saved.get(row.id)??null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
+ return {companyTotals,discoverySince,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.get(row.id)?.applicationId??null,applicationProgress:saved.get(row.id)??null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
 }
 export async function jobDetail(id:string,ownerId:string){const db=getDb(),row=(await db.select().from(jobs).where(eq(jobs.id,id)))[0];if(!row)throw new CatalogError('job_not_found','岗位不存在',404);const [saved]=await applicationProgress(ownerId,[id]);return {...publicJob(row,true),savedApplicationId:saved?.applicationId??null,applicationProgress:saved??null};}
 export async function saveJob(id:string,ownerId:string){
