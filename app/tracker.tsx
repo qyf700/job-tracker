@@ -5,6 +5,7 @@ import { Archive, ArrowDownUp, ArrowUpRight, BriefcaseBusiness, CalendarDays, Ch
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { officialJobLabel } from "@/lib/catalog/job-status";
 import { api, emptyForm, isDue, shanghaiDate, statusLabels, toForm, type Application, type ApplicationForm, type Status } from '@/lib/tracker';
 
 import InterviewPanel from '@/components/tracker/interviews';
@@ -28,7 +29,7 @@ export default function Tracker() {
   const [profileDirty,setProfileDirty]=useState(false);
   const [profileDraft,setProfileDraft]=useState<ProfileDraft|null>(null);
   const viewTitles={companies:'已投企业',discover:'发现岗位',all:'投递台账',today:'今日待办',schedule:'面试日程',resume:'简历中心',profile:'个人资料'};
-  function switchView(next:View){if(profileDirty&&!confirm('有未保存的资料或材料选择，放弃修改并切换？'))return;setProfileDirty(false);setView(next);resetFilters();}
+  function switchView(next:View){if(profileDirty&&!confirm('有未保存的资料或材料选择，放弃修改并切换？'))return;setProfileDirty(false);setView(next);resetFilters();if(view==='discover'&&next!=='discover')void load();}
   const [companyFilter,setCompanyFilter]=useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
@@ -86,7 +87,7 @@ export default function Tracker() {
     if (!value && JSON.stringify(form) !== initialForm && !confirm('放弃尚未保存的修改？')) return;
     setOpen(value);
   }
-  function replace(item:Application) { setItems(previous => previous.map(row => row.id===item.id ? item : row)); }
+  function replace(item:Application) { setItems(previous => previous.map(row => row.id===item.id ? {...row,...item} : row)); }
   async function save(e:FormEvent) {
     e.preventDefault(); if (saving) return;
     const dueDate = String(new FormData(e.currentTarget as HTMLFormElement).get('dueDate') || '') || null;
@@ -158,7 +159,7 @@ export default function Tracker() {
         {notice&&<div className="save-notice" role="status"><Check size={13}/>{notice}<button onClick={()=>setNotice('')} aria-label="关闭提示"><X size={12}/></button></div>}
         <Table className="application-table"><TableHeader><TableRow><TableHead className="company-column">公司 / 岗位</TableHead><TableHead>城市</TableHead><TableHead>批次</TableHead><TableHead>状态</TableHead><TableHead className="action-column">下一步行动</TableHead><TableHead>截止日期</TableHead><TableHead className="row-tools-head"><span className="sr-only">操作</span></TableHead></TableRow></TableHeader>
         <TableBody>{loading&&!loaded?<TableRow><TableCell colSpan={7}><div className="table-empty"><Loader2 size={21} className="spin"/><p>正在加载投递记录…</p></div></TableCell></TableRow>:!visible.length?<TableRow><TableCell colSpan={7}><div className="table-empty"><BriefcaseBusiness size={24}/><h2>{!loaded&&error?'暂时无法读取记录':filtersActive?'没有符合条件的记录':view==='today'?'今天没有到期或逾期行动':'还没有投递记录'}</h2><p>{!loaded&&error?'请重新加载，现有记录不会被清空。':filtersActive?'调整状态、城市或搜索条件后重试。':view==='today'?'在岗位中设置下一步行动和截止日期后，会在这里展示。':'添加岗位后，可在列表里更新状态和下一步行动。'}</p>{filtersActive?<Button variant="outline" size="sm" onClick={resetFilters}>清除筛选</Button>:view==='all'&&loaded?<Button variant="outline" size="sm" onClick={()=>start()}><Plus size={14}/>添加岗位</Button>:null}</div></TableCell></TableRow>:visible.map(item=><TableRow key={item.id} className={busyId===item.id?'saving-row':''}>
-          <TableCell><button className="record-link" onClick={()=>start(item)} disabled={!!busyId}><span className="company-avatar">{item.company.slice(0,1)}</span><span><strong>{item.company}</strong><small>{item.title}</small></span></button></TableCell>
+          <TableCell><button className="record-link" onClick={()=>start(item)} disabled={!!busyId}><span className="company-avatar">{item.company.slice(0,1)}</span><span><strong>{item.company}</strong><small>{item.title}</small>{item.officialJob&&<small title={`核验时间 ${new Date(item.officialJob.lastVerifiedAt).toLocaleString("zh-CN",{timeZone:"Asia/Shanghai"})}`}>{officialJobLabel(item.officialJob)}</small>}</span></button></TableCell>
           <TableCell><span className="secondary-cell">{item.city||'—'}</span></TableCell><TableCell><span className="batch-cell">{item.batch||'—'}</span></TableCell>
           <TableCell><div className={`status-control ${item.status}`}><Circle size={7} fill="currentColor"/><select aria-label={`${item.company}申请状态`} value={item.status} disabled={!!busyId} onChange={e=>void patch(item,{status:e.target.value as Status})}>{Object.entries(statusLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></div></TableCell>
           <TableCell>{actionEdit===item.id?<form className="quick-action" onSubmit={e=>{e.preventDefault();const date=String(new FormData(e.currentTarget).get('dueDate')||'');void patch(item,{nextAction:actionDraft.nextAction,dueDate:date||null});}}><input aria-label="快捷编辑下一步行动" autoFocus maxLength={500} value={actionDraft.nextAction} onChange={e=>setActionDraft({...actionDraft,nextAction:e.target.value})}/><input aria-label="快捷编辑截止日期" name="dueDate" type="date" value={actionDraft.dueDate} onInput={e=>setActionDraft({...actionDraft,dueDate:e.currentTarget.value})} onChange={e=>setActionDraft({...actionDraft,dueDate:e.target.value})}/><div><Button size="xs" type="submit" disabled={!!busyId}>保存</Button><Button size="xs" variant="ghost" type="button" disabled={!!busyId} onClick={()=>setActionEdit(null)}>取消</Button></div></form>:<button className={item.nextAction?'action-link':'action-link muted'} disabled={!!busyId} onClick={()=>{setActionEdit(item.id);setActionDraft({nextAction:item.nextAction,dueDate:item.dueDate??''});}}>{item.nextAction||'+ 设置行动'}</button>}</TableCell>

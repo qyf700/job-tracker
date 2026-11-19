@@ -64,6 +64,13 @@
       "when": 1795067018592,
       "tag": "0008_low_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1795076975359,
+      "tag": "0009_windy_black_panther",
+      "breakpoints": true
     }
   ]
 }

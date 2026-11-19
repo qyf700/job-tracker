@@ -110,6 +110,20 @@ try{
   assert.equal(retried.state,'succeeded');
   const afterRetry=await data(local,`/api/jobs?companyId=xunlei&filterId=${secondId}&newOnly=1`);
   assert.equal(afterRetry.newCount,0,'Re-sync must preserve each existing job’s first discovery time.');
+  const saved=await data(local,'/api/jobs/'+encodeURIComponent(detail.id)+'/save','POST');
+  const application=async()=> (await data(local,'/api/applications')).items.find(item=>item.id===saved.applicationId);
+  const beforeClose=await application();
+  assert.equal(beforeClose.officialJob.availability,detail.availability);
+  const inProgress=await data(local,'/api/applications/'+saved.applicationId,'PATCH',{version:beforeClose.version,status:'in_progress'});
+  // Change the status of the real catalog row in this temporary D1 database only.
+  assert.match(detail.id,/^[a-z0-9:_-]+$/i);
+  await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--command',
+   `UPDATE jobs SET availability='closed',closed_at=last_verified_at WHERE id='${detail.id}'`]);
+  const afterClose=await application();
+  assert.equal(afterClose.officialJob.availability,'closed');
+  assert.equal(afterClose.status,'in_progress');
+  assert.equal(afterClose.appliedAt,inProgress.appliedAt);
+  assert.deepEqual((await data(B,'/api/applications')).items,[]);
   console.log('Verified real sources:',JSON.stringify(first.runs.map(({sourceId,seenCount})=>({sourceId,seenCount}))));
  }
  const aid=randomUUID(),bid=randomUUID();

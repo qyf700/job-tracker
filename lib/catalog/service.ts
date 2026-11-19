@@ -1,5 +1,5 @@
 import {env} from 'cloudflare:workers';
-import {and,asc,desc,eq,gt,inArray,isNull,lt,lte,ne,or,sql} from 'drizzle-orm';
+import {and,asc,desc,eq,gt,inArray,isNotNull,isNull,lt,lte,ne,or,sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {getDb} from '../../db';
 import {companies,companySources,jobs,catalogSyncRuns,catalogSavedJobs,applications} from '../../db/schema';
@@ -8,6 +8,7 @@ import {CatalogError,mokaSources,readZhihuJobs} from './moka';
 import {guardedJobUpsert} from './queries.mjs';
 import {filterSchema, sameFilters, type CatalogFilters} from './filters';
 import {readCatalogPreferences, readCatalogSettings} from './preferences';
+import {publicJobStatus} from './job-status';
 import {nextSourceSync} from './schedule';
 
 export function canScheduleCatalog(userId: string) {
@@ -25,10 +26,9 @@ async function ensureSource(source:typeof mokaSources[number]){
  const db=getDb(),now=new Date().toISOString();
  await db.batch([db.insert(companies).values({id:source.orgId,name:source.companyName,officialCareersUrl:source.entryUrl,createdAt:now,updatedAt:now}).onConflictDoNothing(),db.insert(companySources).values({id:source.id,companyId:source.orgId,adapterKey:'moka-public-v1',entryUrl:source.entryUrl}).onConflictDoNothing()]);
 }
-function effectiveAvailability(row:typeof jobs.$inferSelect,freshnessSeconds=86400){return row.availability!=='closed'&&Date.now()-Date.parse(row.lastVerifiedAt)>freshnessSeconds*1000?'stale':row.availability;}
 export function publicJob(row:typeof jobs.$inferSelect,detail=false,freshnessSeconds=86400){
  const {locationsJson,evidenceJson,jdText,contentHash,lastSeenRunId,...value}=row;
- return {...value,companyName:mokaSources.find(source=>source.orgId===row.companyId)?.companyName??row.companyId,locations:JSON.parse(locationsJson) as string[],availability:effectiveAvailability(row,freshnessSeconds),...(detail?{jdText,evidence:JSON.parse(evidenceJson),contentHash}:{})};
+ return {...value,companyName:mokaSources.find(source=>source.orgId===row.companyId)?.companyName??row.companyId,locations:JSON.parse(locationsJson) as string[],availability:publicJobStatus(row,freshnessSeconds).availability,...(detail?{jdText,evidence:JSON.parse(evidenceJson),contentHash}:{})};
 }
 export async function sourceSummary(userId:string){
  const db = getDb();
@@ -76,7 +76,7 @@ export async function syncSource(userId:string,id:string){
   const rows=await Promise.all(normalized.map(async job=>({
    id:`${source.id}:${job.externalJobId}`,sourceId:id,externalJobId:job.externalJobId,companyId:source.orgId,programId:null,
    title:job.title,department:job.department,locationsJson:JSON.stringify(job.locations),employmentType:job.employmentType,programKind:job.programKind,graduationYear:job.graduationYear,graduationLabel:job.graduationLabel,sourceCategory:job.sourceCategory,
-   jdText:job.jdText,originalUrl:job.originalUrl,applyUrl:job.applyUrl,deadlineAt:job.deadlineAt,publishedAt:job.publishedAt,availability:job.availability,evidenceJson:JSON.stringify({...job.evidence,checkedAt:finishedAt}),contentHash:await sha256(new TextEncoder().encode(JSON.stringify(job))),firstSeenAt:finishedAt,lastSeenAt:finishedAt,lastVerifiedAt:finishedAt,closedAt:job.availability==='closed'?finishedAt:null,lastSeenRunId:runId,
+   jdText:job.jdText,originalUrl:job.originalUrl,applyUrl:job.applyUrl,deadlineAt:job.deadlineAt,publishedAt:job.publishedAt,availability:job.availability,evidenceJson:JSON.stringify({...job.evidence,checkedAt:finishedAt}),contentHash:await sha256(new TextEncoder().encode(JSON.stringify(job))),firstSeenAt:finishedAt,lastSeenAt:finishedAt,lastVerifiedAt:finishedAt,closedAt:job.availability==='closed'?finishedAt:null,lastSeenRunId:runId,reopenedAt:null,
   })));
   const guard=sql`EXISTS (SELECT 1 FROM company_sources WHERE id=${id} AND lease_run_id=${runId})`;
   const result=await db.batch([
@@ -138,7 +138,9 @@ function jobConditions(filters: CatalogFilters, threshold: string) {
  if (cities.length) clauses.push(sql`EXISTS (SELECT 1 FROM json_each(${jobs.locationsJson}) AS location
   JOIN json_each(${JSON.stringify(cities)}) AS city ON instr(location.value, city.value) > 0)`);
  if (filters.availability === 'stale') clauses.push(and(ne(jobs.availability,'closed'),lt(jobs.lastVerifiedAt,threshold)));
- else if (filters.availability) {
+ else if (filters.availability === 'reopened') {
+  clauses.push(eq(jobs.availability, 'accepting'), isNotNull(jobs.reopenedAt), sql`${jobs.lastVerifiedAt} >= ${threshold}`);
+ } else if (filters.availability) {
   clauses.push(eq(jobs.availability,filters.availability));
   if (filters.availability !== 'closed') clauses.push(sql`${jobs.lastVerifiedAt} >= ${threshold}`);
  }

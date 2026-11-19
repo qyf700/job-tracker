@@ -34,7 +34,16 @@ test('lease-guarded actual D1 prepared upsert deduplicates and preserves first o
  const sqlite=new DatabaseSync(':memory:');for(const file of readdirSync('drizzle').filter(x=>x.endsWith('.sql')).sort())sqlite.exec(readFileSync('drizzle/'+file,'utf8'));
  sqlite.prepare('INSERT INTO companies VALUES(?,?,?,?,?)').run('zhihu','知乎','https://example.invalid','first','first');sqlite.prepare('INSERT INTO company_sources(id,company_id,adapter_key,entry_url,lease_run_id) VALUES(?,?,?,?,?)').run('s','zhihu','test','https://example.invalid','lease');
  const client={prepare(query){return{bind(...args){return{query,args};}};},async batch(statements){sqlite.exec('BEGIN');try{const result=statements.map(({query,args})=>({results:sqlite.prepare(query).all(...args),success:true,meta:{}}));sqlite.exec('COMMIT');return result;}catch(e){sqlite.exec('ROLLBACK');throw e;}}};
- const db=drizzle(client),row={id:'job',sourceId:'s',externalJobId:id,companyId:'zhihu',programId:null,title:'one',department:'',locationsJson:'[]',employmentType:'unknown',programKind:'unknown',graduationYear:null,graduationLabel:'',sourceCategory:'',jdText:'test',originalUrl:'https://example.invalid',applyUrl:'https://example.invalid',deadlineAt:null,publishedAt:null,availability:'accepting',evidenceJson:'{}',contentHash:'hash',firstSeenAt:'first',lastSeenAt:'first',lastVerifiedAt:'first',closedAt:null,lastSeenRunId:'lease'};
+ const db=drizzle(client),row={id:'job',sourceId:'s',externalJobId:id,companyId:'zhihu',programId:null,title:'one',department:'',locationsJson:'[]',employmentType:'unknown',programKind:'unknown',graduationYear:null,graduationLabel:'',sourceCategory:'',jdText:'test',originalUrl:'https://example.invalid',applyUrl:'https://example.invalid',deadlineAt:null,publishedAt:null,availability:'accepting',evidenceJson:'{}',contentHash:'hash',firstSeenAt:'first',lastSeenAt:'first',lastVerifiedAt:'first',closedAt:null,lastSeenRunId:'lease',reopenedAt:null};
  await db.batch([guardedJobUpsert(db,jobs,companySources,row,'lease')]);await db.batch([guardedJobUpsert(db,jobs,companySources,{...row,title:'updated',firstSeenAt:'second'},'lease')]);assert.equal(sqlite.prepare('SELECT count(*) n FROM jobs').get().n,1);assert.equal(sqlite.prepare('SELECT first_seen_at FROM jobs').get().first_seen_at,'first');
- await db.batch([guardedJobUpsert(db,jobs,companySources,{...row,title:'stale overwrite'},'expired')]);assert.equal(sqlite.prepare('SELECT title FROM jobs').get().title,'updated');sqlite.close();
+ await db.batch([guardedJobUpsert(db,jobs,companySources,{...row,title:'stale overwrite'},'expired')]);assert.equal(sqlite.prepare('SELECT title FROM jobs').get().title,'updated');
+ const observe=changes=>db.batch([guardedJobUpsert(db,jobs,companySources,{...row,...changes},'lease')]);
+ const state=()=>({...sqlite.prepare('SELECT first_seen_at, closed_at, reopened_at FROM jobs').get()});
+ await observe({availability:'closed',closedAt:'third',lastVerifiedAt:'third'});
+ await observe({availability:'closed',closedAt:'fourth',lastVerifiedAt:'fourth'});
+ assert.deepEqual(state(),{first_seen_at:'first',closed_at:'third',reopened_at:null});
+ await observe({lastVerifiedAt:'fifth'});
+ await observe({lastVerifiedAt:'sixth'});
+ assert.deepEqual(state(),{first_seen_at:'first',closed_at:null,reopened_at:'fifth'});
+ sqlite.close();
 });

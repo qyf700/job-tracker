@@ -1,9 +1,12 @@
+import type {OfficialJobStatus} from './catalog/job-status';
+
 export const statusLabels = {
   saved: "待投递", applied: "已投递", in_progress: "流程中", offer: "Offer",
   rejected: "未通过", withdrawn: "已撤回", closed: "已结束",
 } as const;
 export type Status = keyof typeof statusLabels;
 export type Application = {
+  officialJob?: OfficialJobStatus | null;
   id: string; company: string; title: string; city: string; batch: string;
   sourceUrl: string; jd: string; status: Status; nextAction: string; dueDate: string | null;
   notes: string; version: number; createdAt: string; updatedAt: string; appliedAt: string | null;
