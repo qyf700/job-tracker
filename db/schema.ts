@@ -129,7 +129,14 @@ export const catalogPreferences = sqliteTable('catalog_preferences', {
   ownerId: text('owner_id').primaryKey(),
   sourceIdsJson: text('source_ids_json').notNull().default('[]'),
   intervalHours: integer('interval_hours').notNull().default(6),
-  filterJson: text('filter_json'),
-  filterId: text('filter_id'),
-  viewedThrough: text('viewed_through'),
+  activeFilterId: text('active_filter_id'),
 });
+
+export const catalogFilters = sqliteTable('catalog_filters', {
+  id: text('id').primaryKey(),
+  ownerId: text('owner_id').notNull(),
+  name: text('name').notNull(),
+  filterJson: text('filter_json').notNull(),
+  viewedThrough: text('viewed_through').notNull(),
+  revision: integer('revision').notNull().default(1),
+}, table => [index('catalog_filters_owner').on(table.ownerId)]);

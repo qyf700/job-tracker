@@ -43,3 +43,16 @@
   color: #303942;
   font-size: 12px;
 }
+
+.catalog-company-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  width: 100%;
+  min-width: 0;
+}
+
+.catalog-company-filter legend {
+  font-size: 11px;
+  color: #737b87;
+}

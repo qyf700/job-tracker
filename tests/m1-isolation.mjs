@@ -18,28 +18,100 @@ const origin=`http://127.0.0.1:${port}`;
 const A={'oai-authenticated-user-id':'m1-test-owner-A','oai-authenticated-user-email':'a@example.invalid'};
 const B={'oai-authenticated-user-id':'m1-test-owner-B','oai-authenticated-user-email':'b@example.invalid'};
 async function call(identity,path,method='GET',body,expected=200,extra={}){
- const json=body!==undefined&&!(body instanceof FormData);const r=await fetch(origin+path,{method,headers:{...identity,...(json?{'Content-Type':'application/json'}:{}),...extra},body:body===undefined?undefined:json?JSON.stringify(body):body,redirect:'manual'});
- assert.equal(r.status,expected,`${method} ${path} expected ${expected}, got ${r.status}: ${r.status===expected?'':await r.text()}`);checks++;return r;
+ const json=body!==undefined&&!(body instanceof FormData);
+ const signal=AbortSignal.timeout(path.startsWith('/api/catalog/')?120_000:20_000);
+ try {
+  const r=await fetch(origin+path,{method,headers:{...identity,...(json?{'Content-Type':'application/json'}:{}),...extra},body:body===undefined?undefined:json?JSON.stringify(body):body,redirect:'manual',signal});
+  assert.equal(r.status,expected,`${method} ${path} expected ${expected}, got ${r.status}: ${r.status===expected?'':await r.text()}`);
+  const bytes=r.body?await r.arrayBuffer():null;
+  checks++;
+  return new Response(bytes,{status:r.status,headers:r.headers});
+ } catch (error) {
+  if(signal.aborted)throw new Error(`${method} ${path} timed out`,{cause:error});
+  throw error;
+ }
 }
 async function data(...args){return(await call(...args)).json();}
 function upload(id,label='isolation fixture',bytes=fixture(),name='fixture.pdf'){const form=new FormData();form.append('id',id);form.append('label',label);form.append('file',new File([bytes],name,{type:'application/pdf'}));return form;}
 try{
- const migrations=(await readdir('drizzle')).filter(x=>x.endsWith('.sql')).sort();await writeFile(dir+'/schema.sql',(await Promise.all(migrations.map(x=>readFile('drizzle/'+x,'utf8')))).join('\n'));
+ const migrations=(await readdir('drizzle')).filter(x=>x.endsWith('.sql')).sort();
+ const legacyFilterId=randomUUID();
+ const legacySettings=`INSERT INTO catalog_preferences
+  (owner_id,source_ids_json,interval_hours,filter_json,filter_id,viewed_through)
+  VALUES ('local_seedy','["zhihu-moka-campus","xunlei-moka-campus"]',6,'{"companyId":"zhihu"}','${legacyFilterId}','2000-01-01T00:00:00.000Z');`;
+ const schema=await Promise.all(migrations.map(x=>readFile('drizzle/'+x,'utf8')));
+ schema.splice(migrations.findIndex(x=>x.startsWith('0008_')),0,legacySettings);
+ await writeFile(dir+'/schema.sql',schema.join('\n'));
  await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--file',dir+'/schema.sql']);
- worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A'],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
+ worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A',...(process.env.CATALOG_LOCAL_LIVE==='1'?['--var','LOCAL_CATALOG:1']:[])],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
  worker.stdout.on('data',b=>logs+=b);worker.stderr.on('data',b=>logs+=b);
  let ready=false;for(let i=0;i<120;i++){try{await fetch(origin+'/api/health');ready=true;break;}catch{await new Promise(r=>setTimeout(r,250));}}assert.ok(ready,'workerd failed to start: '+logs);
  const preferencePath='/api/catalog/preferences';
- const saveFilter={action:'filter',filters:{companyId:'zhihu',q:'后端'}};
+ const saveFilter={action:'create',name:'后端',filters:{companyId:'zhihu',q:'后端'}};
  await call({},preferencePath,'PUT',saveFilter,401);
  await call(A,preferencePath,'PUT',{action:'sources',settings:{sourceIds:['zhihu-moka-campus'],intervalHours:6}},403);
  await call(A,'/api/catalog/local-sync','POST',undefined,403);
- const ownFilter=(await data(A,preferencePath,'PUT',saveFilter)).savedFilter;
- assert.equal((await data(A,'/api/companies')).preferences.savedFilter.id,ownFilter.id);
- assert.equal((await data(B,'/api/companies')).preferences.savedFilter,null);
- await call(B,preferencePath,'PUT',{action:'viewed',filterId:ownFilter.id,through:ownFilter.viewedThrough},409);
+ const firstPreferences=await data(A,preferencePath,'PUT',saveFilter);
+ const ownFilter=firstPreferences.savedFilters[0];
+ assert.equal(firstPreferences.activeFilterId,ownFilter.id);
+ assert.equal((await data(A,'/api/companies')).preferences.activeFilterId,ownFilter.id);
+ assert.deepEqual((await data(B,'/api/companies')).preferences.savedFilters,[]);
+ await call(B,preferencePath,'PUT',{action:'viewed',filterId:ownFilter.id,revision:ownFilter.revision,through:ownFilter.viewedThrough},409);
+ await call(B,preferencePath,'PUT',{action:'select',filterId:ownFilter.id},409);
  await call(A,'/api/jobs?companyId=zhihu&newOnly=1','GET',undefined,409);
  assert.equal((await data(A,'/api/jobs?companyId=zhihu&q=%E5%90%8E%E7%AB%AF&newOnly=1')).newCount,0);
+ const renamed=(await data(A,preferencePath,'PUT',{action:'edit',filterId:ownFilter.id,revision:1,name:'后端开发',filters:ownFilter.filters})).savedFilters[0];
+ assert.equal(renamed.viewedThrough,ownFilter.viewedThrough);
+ await call(A,preferencePath,'PUT',{action:'delete',filterId:ownFilter.id,revision:1},409);
+ assert.equal((await data(A,preferencePath,'PUT',{action:'delete',filterId:ownFilter.id,revision:2})).activeFilterId,null);
+
+ const local={'oai-authenticated-user-id':'local_seedy','oai-authenticated-user-email':'local@example.invalid'};
+ const migrated=(await data(local,'/api/companies')).preferences;
+ assert.deepEqual(migrated.sourceIds,['zhihu-moka-campus','xunlei-moka-campus']);
+ assert.equal(migrated.intervalHours,6);
+ assert.equal(migrated.activeFilterId,legacyFilterId);
+ assert.equal(migrated.savedFilters[0].name,'原有筛选');
+ assert.equal(migrated.savedFilters[0].viewedThrough,'2000-01-01T00:00:00.000Z');
+ if(process.env.CATALOG_LOCAL_LIVE==='1'){
+  const added=await data(local,preferencePath,'PUT',{action:'create',name:'迅雷',filters:{companyId:'xunlei'}});
+  const secondId=added.activeFilterId;
+  const first=await data(local,'/api/catalog/local-sync?initial=1','POST');
+  assert.equal(first.runs.length,2);
+  assert.ok(first.runs.every(run=>run.state==='succeeded'&&run.seenCount>0),JSON.stringify(first));
+  const results=await data(local,`/api/jobs?companyId=xunlei&filterId=${secondId}&newOnly=1&limit=1`);
+  assert.ok(results.items[0].isNew);
+  assert.equal(results.newCount,first.runs.find(run=>run.sourceId==='xunlei-moka-campus').seenCount);
+  assert.ok(results.filterCounts.find(count=>count.id===legacyFilterId).newCount>0);
+  const detail=await data(local,'/api/jobs/'+encodeURIComponent(results.items[0].id));
+  assert.equal(new URL(detail.originalUrl).hostname,'app.mokahr.com');
+  assert.ok(detail.jdText&&detail.lastVerifiedAt);
+  const viewed=await data(local,preferencePath,'PUT',{action:'viewed',filterId:secondId,revision:1,through:results.observedAt});
+  assert.equal(viewed.activeFilterId,secondId);
+  const updated=await data(local,`/api/jobs?companyId=xunlei&filterId=${secondId}&newOnly=1`);
+  assert.equal(updated.newCount,0);
+  assert.equal(updated.filterCounts.find(count=>count.id===legacyFilterId).newCount,results.filterCounts.find(count=>count.id===legacyFilterId).newCount);
+  const multiple=await data(local,'/api/jobs?companyId=xunlei%2Czhihu&limit=100');
+  assert.equal(multiple.items.length,first.runs.reduce((total,run)=>total+run.seenCount,0));
+  const scheduled=updated.sourceHealth.sources.filter(source=>source.selected);
+  assert.ok(scheduled.every(source=>source.latestRun?.state==='succeeded'&&Date.parse(source.nextUpdateAt)-Date.parse(source.lastSuccessAt)===6*3600000));
+  assert.deepEqual((await data(local,'/api/catalog/local-sync','POST')).runs,[]);
+  const failedRunId=randomUUID();
+  const failureTime=new Date().toISOString();
+  await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--command',
+   `INSERT INTO catalog_sync_runs (id,source_id,state,started_at,finished_at,error_code,error_message)
+    VALUES ('${failedRunId}','xunlei-moka-campus','failed','${failureTime}','${failureTime}','test_failure','retry test');
+    UPDATE company_sources SET last_run_id='${failedRunId}',last_error_at='${failureTime}',last_error_message='retry test',
+    last_success_at='2000-01-01T00:00:00.000Z' WHERE id='xunlei-moka-campus';`]);
+  const beforeRetry=(await data(local,'/api/companies')).sources.find(source=>source.id==='xunlei-moka-campus');
+  assert.equal(beforeRetry.latestRun.state,'failed');
+  assert.equal(Date.parse(beforeRetry.nextUpdateAt)-Date.parse(failureTime),15*60000);
+  assert.deepEqual((await data(local,'/api/catalog/local-sync','POST')).runs,[]);
+  const retried=await data(local,'/api/catalog/sources/xunlei-moka-campus/sync','POST');
+  assert.equal(retried.state,'succeeded');
+  const afterRetry=await data(local,`/api/jobs?companyId=xunlei&filterId=${secondId}&newOnly=1`);
+  assert.equal(afterRetry.newCount,0,'Re-sync must preserve each existing job’s first discovery time.');
+  console.log('Verified real sources:',JSON.stringify(first.runs.map(({sourceId,seenCount})=>({sourceId,seenCount}))));
+ }
  const aid=randomUUID(),bid=randomUUID();
  const a=(await data(A,'/api/resumes','POST',upload(aid),201)).item;
  const b=(await data(B,'/api/resumes','POST',upload(bid),201)).item;

@@ -6,42 +6,48 @@ import {Sheet,SheetClose,SheetContent,SheetDescription,SheetTitle} from '@/compo
 import {api} from '@/lib/tracker';
 import {sameFilters, type CatalogFilters} from '@/lib/catalog/filters';
 type Job={id:string;isNew?:boolean;title:string;companyName:string;locations:string[];department:string;employmentType:string;programKind:string;graduationYear:number|null;graduationLabel:string;sourceCategory:string;availability:string;publishedAt:string|null;lastVerifiedAt:string;deadlineAt:string|null;originalUrl:string;applyUrl:string;savedApplicationId:string|null;jdText?:string;evidence?:{sourceStatus?:string;reason?:string;classification?:string;graduationEvidence?:string}};
-type Source={id:string;companyName:string;entryUrl:string;lastSuccessAt?:string|null;lastErrorMessage?:string|null;lastErrorAt?:string|null;running:boolean;state:string};
-type Preferences={sourceIds:string[];intervalHours:number;savedFilter:{id:string;filters:CatalogFilters;viewedThrough:string}|null};
-type Health={preferences:Preferences;canSchedule:boolean;sources:Source[];canSync:boolean;runs:{id:string;state:string;seenCount:number;startedAt:string;finishedAt:string|null}[]};
-type Result={newCount:number;observedAt:string;companyTotals:{companyId:string;companyName:string;open:number;stale:number;lastVerifiedAt:string|null}[];items:Job[];nextCursor:string|null;sourceHealth:Health};
+type SyncRun={id:string;state:string;seenCount:number;startedAt:string;finishedAt:string|null};
+type Source={id:string;companyId:string;companyName:string;entryUrl:string;lastSuccessAt:string|null;lastErrorMessage:string|null;lastErrorAt:string|null;running:boolean;selected:boolean;nextUpdateAt:string|null;due:boolean;latestRun:SyncRun|null};
+type SavedFilter={id:string;name:string;revision:number;filters:CatalogFilters;viewedThrough:string};
+type Preferences={sourceIds:string[];intervalHours:number;activeFilterId:string|null;savedFilters:SavedFilter[]};
+type Health={preferences:Preferences;canSchedule:boolean;sources:Source[];canSync:boolean};
+type Result={newCount:number;filterCounts:{id:string;newCount:number}[];observedAt:string;companyTotals:{companyId:string;companyName:string;open:number;stale:number;lastVerifiedAt:string|null}[];items:Job[];nextCursor:string|null;sourceHealth:Health};
 const labels:Record<string,string>={accepting:'官网标记开放',visible_unverified:'待核实',closed:'已关闭',stale:'数据过期',unknown:'未注明',autumn:'秋招',summer_internship:'暑期实习',daily_internship:'日常实习',other:'其他'};
 function time(value:string|null|undefined){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'尚无成功同步';}
 function message(e:unknown){return e instanceof Error?e.message:'操作失败，请重试';}
 export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>void;onViewApplications:()=>void}){
- const [result,setResult]=useState<Result|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState(''),[syncing,setSyncing]=useState(false),[saving,setSaving]=useState(''),[detail,setDetail]=useState<Job|null>(null);
+ const [result,setResult]=useState<Result|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState(''),[syncing,setSyncing]=useState<string|null>(null),[saving,setSaving]=useState(''),[detail,setDetail]=useState<Job|null>(null);
  const [draftQuery,setDraftQuery]=useState(''),[q,setQ]=useState(''),[companyId,setCompany]=useState(''),[city,setCity]=useState(''),[programKind,setProgram]=useState(''),[employmentType,setEmployment]=useState(''),[graduationYear,setYear]=useState(''),[availability,setAvailability]=useState(''),[refresh,setRefresh]=useState(0);
  const generation=useRef(0), restored=useRef(false);
  const [sourceDraft,setSourceDraft]=useState<Pick<Preferences,'sourceIds'|'intervalHours'>|null>(null);
  const [updating,setUpdating]=useState(false),[newOnly,setNewOnly]=useState(false);
  const filters={q,companyId,city:city.trim(),programKind,employmentType,graduationYear,availability} as CatalogFilters;
- const savedFilter=result?.sourceHealth.preferences.savedFilter;
+ const [filterName,setFilterName]=useState(''),[confirmDelete,setConfirmDelete]=useState(false);
+ const preferences=result?.sourceHealth.preferences;
+ const savedFilter=preferences?.savedFilters.find(filter=>filter.id===preferences.activeFilterId);
  const savedActive=!!savedFilter&&sameFilters(savedFilter.filters,filters);
  function applyFilters(f:CatalogFilters){
   setQ(f.q);setDraftQuery(f.q);setCompany(f.companyId);setCity(f.city);setProgram(f.programKind);
   setEmployment(f.employmentType);setYear(f.graduationYear);setAvailability(f.availability);setNewOnly(false);
  }
 
- function query(cursor=''){const params=new URLSearchParams({...filters,limit:'20',newOnly:newOnly&&savedActive?'1':'0'});if(cursor)params.set('cursor',cursor);return params.toString();}
+ function query(cursor=''){const params=new URLSearchParams({...filters,limit:'20',newOnly:newOnly&&savedActive?'1':'0'});if(savedFilter)params.set('filterId',savedFilter.id);if(cursor)params.set('cursor',cursor);return params.toString();}
  useEffect(()=>{const controller=new AbortController(),sequence=++generation.current;setLoading(true);setError('');void api<Result>('/api/jobs?'+query(),{signal:controller.signal}).then(r=>{if(sequence!==generation.current)return;
   setResult(r);
   if(!restored.current){
    restored.current=true;
-   if(r.sourceHealth.preferences.savedFilter)applyFilters(r.sourceHealth.preferences.savedFilter.filters);
-  }}).catch(e=>{if(!controller.signal.aborted)setError(message(e));}).finally(()=>{if(sequence===generation.current)setLoading(false);});return()=>controller.abort();},[q,companyId,city,programKind,employmentType,graduationYear,availability,newOnly,refresh]);
- const healthSignature=JSON.stringify(result?.sourceHealth.sources.map(s=>[s.id,s.lastSuccessAt,s.lastErrorAt,s.running]));
+   const pref=r.sourceHealth.preferences;
+   const saved=pref.savedFilters.find(filter=>filter.id===pref.activeFilterId);
+   if(saved){applyFilters(saved.filters);setFilterName(saved.name);}
+  }}).catch(e=>{if(!controller.signal.aborted)setError(message(e));}).finally(()=>{if(sequence===generation.current)setLoading(false);});return()=>controller.abort();},[q,companyId,city,programKind,employmentType,graduationYear,availability,newOnly,savedFilter?.id,refresh]);
+ const healthSignature=JSON.stringify(result?.sourceHealth.sources.map(s=>[s.id,s.lastSuccessAt,s.lastErrorAt,s.running,s.latestRun?.id,s.due]));
  useEffect(()=>{
   if(!result?.sourceHealth.canSchedule)return;
   const controller=new AbortController();
   async function check(){
    try {
     const health=await api<Health>('/api/companies',{signal:controller.signal});
-    const latest=JSON.stringify(health.sources.map(s=>[s.id,s.lastSuccessAt,s.lastErrorAt,s.running]));
+    const latest=JSON.stringify(health.sources.map(s=>[s.id,s.lastSuccessAt,s.lastErrorAt,s.running,s.latestRun?.id,s.due]));
     if(latest!==healthSignature&&!controller.signal.aborted)setRefresh(v=>v+1);
    } catch { /* Keep the last catalogue while the local server is unavailable. */ }
   }
@@ -50,7 +56,7 @@ export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>v
   return()=>{controller.abort();window.clearInterval(timer);window.removeEventListener('focus',check);};
  },[healthSignature,result?.sourceHealth.canSchedule]);
 
- async function updatePreferences(body:unknown,initial=false){
+ async function updatePreferences(body:{action:string;[key:string]:unknown},initial=false){
   setUpdating(true);setError('');setNotice('');
   try {
    const preferences=await api<Preferences>('/api/catalog/preferences',{
@@ -65,14 +71,20 @@ export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>v
     const failed=runs.filter(run=>run.state==='failed').length;
     setNotice(runs.length?`首次同步收录 ${count} 个官网岗位。${failed?` ${failed} 个来源同步失败，请查看来源状态。`:''}`:'来源已保存。同步进度可在来源列表查看。');
    } else {
-    setNewOnly(false);
-    setNotice((body as {action:string}).action==='filter'?'筛选已保存。此后首次收录且符合条件的岗位会标为新增。':'已标记当前筛选的新增岗位为已查看。');
+    const active=preferences.savedFilters.find(filter=>filter.id===preferences.activeFilterId);
+    if(body.action==='select'||body.action==='create'||body.action==='edit'||body.action==='delete'){
+     setFilterName(active?.name??'');setNewOnly(false);
+     if(active)applyFilters(active.filters);
+     if(body.action==='select'&&!active)clear();
+    }
+    setConfirmDelete(false);
+    if(body.action==='viewed')setNotice('已更新这组筛选的查看进度。');
    }
   } catch(e){setError(message(e));}
   finally{setUpdating(false);setRefresh(v=>v+1);}
  }
  async function more(){if(!result?.nextCursor)return;const sequence=generation.current;setLoading(true);try{const r=await api<Result>('/api/jobs?'+query(result.nextCursor));if(sequence===generation.current)setResult(prev=>({...r,items:[...(prev?.items||[]),...r.items]}));}catch(e){setError(message(e));}finally{if(sequence===generation.current)setLoading(false);}}
- async function sync(id:string){setSyncing(true);setError('');setNotice('正在从官网核验列表和每条职位详情，请稍候…');try{const r=await api<{state:string;seenCount:number}>('/api/catalog/sources/'+id+'/sync',{method:'POST'});setNotice(`同步成功，本次官网返回 ${r.seenCount} 个真实岗位。`);}catch(e){setError(message(e));setNotice('本次同步未成功，保留上次成功目录。');}finally{setSyncing(false);setRefresh(v=>v+1);}}
+ async function sync(id:string){setSyncing(id);setError('');setNotice('正在从官网核验列表和每条职位详情，请稍候…');try{const r=await api<{state:string;seenCount:number}>('/api/catalog/sources/'+id+'/sync',{method:'POST'});setNotice(`同步成功，本次官网返回 ${r.seenCount} 个真实岗位。`);}catch(e){setError(message(e));setNotice('本次同步未成功，保留上次成功目录。');}finally{setSyncing(null);setRefresh(v=>v+1);}}
  async function show(job:Job){setError('');try{setDetail(await api<Job>('/api/jobs/'+encodeURIComponent(job.id)));}catch(e){setError(message(e));}}
  async function save(job:Job){setSaving(job.id);setError('');try{const r=await api<{applicationId:string}>('/api/jobs/'+encodeURIComponent(job.id)+'/save',{method:'POST'});setNotice('已加入我的申请，状态为待投递；尚未向公司提交材料。');setDetail(prev=>prev?.id===job.id?{...prev,savedApplicationId:r.applicationId}:prev);setResult(prev=>prev?{...prev,items:prev.items.map(x=>x.id===job.id?{...x,savedApplicationId:r.applicationId}:x)}:prev);onSaved();}catch(e){setError(message(e));}finally{setSaving('');}}
  function search(e:FormEvent){e.preventDefault();setQ(draftQuery.trim());}
@@ -98,7 +110,26 @@ export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>v
   </div>
   <p className="muted-note">只自动更新已选来源。本地服务运行时会检查更新，关闭网页仍可同步。</p>
  </section>}
- {health?.sources.map(source=><div className="catalog-source" key={source.id}><div><strong>{source.companyName} · Moka 校园招聘</strong><p>最近成功核验：{time(source.lastSuccessAt)} <a href={source.entryUrl} target="_blank" rel="noreferrer">官网来源 ↗</a></p>{source.lastErrorMessage&&<small className="catalog-source-error">最近同步失败：{source.lastErrorMessage}（{time(source.lastErrorAt)}）</small>}</div>{health.canSync&&<Button size="sm" variant="outline" disabled={syncing||source.running} onClick={()=>void sync(source.id)}>{syncing?<Loader2 size={13} className="spin"/>:<RefreshCw size={13}/>} {syncing?'正在核验官网…':source.running?'同步进行中':'同步官网岗位'}</Button>}</div>)}
+ {health&&<section className="records-panel" aria-label="招聘源同步状态">
+  <h3>招聘源同步状态</h3>
+  {health.sources.map(source=>{
+   const run=source.latestRun;
+   const status=source.running?'同步中':run?.state==='failed'?'同步失败':run?.state==='succeeded'?`成功 · ${run.seenCount} 个岗位`:'尚未同步';
+   const next=source.nextUpdateAt?(source.running?'本次同步结束后计算':source.due?'已到期，等待后台检查':time(source.nextUpdateAt)):
+    source.selected?'定时更新已暂停':'未启用自动更新';
+   return <article className="catalog-source" key={source.id}>
+    <div>
+     <strong>{source.companyName} · Moka 校园招聘</strong> <span className="badge">{status}</span>
+     <p>最近同步：{run?time(run.finishedAt??run.startedAt):'尚未同步'} · 最近成功：{time(source.lastSuccessAt)}</p>
+     <p>下次更新：{next} <a href={source.entryUrl} target="_blank" rel="noreferrer">官网来源 ↗</a></p>
+     {source.lastErrorMessage&&<small className="catalog-source-error">{source.lastErrorMessage}</small>}
+    </div>
+    {health.canSync&&<Button size="sm" variant="outline" disabled={syncing!==null||source.running} onClick={()=>void sync(source.id)}>
+     {syncing===source.id||source.running?<><Loader2 size={13} className="spin"/> 同步中</>:<><RefreshCw size={13}/> {run?.state==='failed'?'重试同步':'同步官网岗位'}</>}
+    </Button>}
+   </article>;
+  })}
+ </section>}
  {error&&<div className="error-banner" role="alert">{error}<Button size="xs" variant="outline" onClick={()=>setRefresh(v=>v+1)}>重新读取目录</Button></div>}{notice&&<div className="save-notice" role="status">{notice}</div>}
  <section className="records-panel" aria-label="企业在招情况">
   <h3>企业在招情况</h3>
@@ -108,16 +139,42 @@ export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>v
    <Button size="sm" variant="outline" onClick={()=>{clear();setCompany(company.companyId);setAvailability(company.open?'accepting':'');}}>查看{company.open?'开放岗位':'已收录岗位'}</Button>
   </article>)}
  </section>
- <form className="catalog-search" onSubmit={search}><Search size={15}/><input aria-label="搜索真实岗位" value={draftQuery} maxLength={100} placeholder="搜索职位名称或 JD 关键词" onChange={e=>setDraftQuery(e.target.value)}/><Button size="sm" type="submit">搜索岗位</Button></form>
- <div className="catalog-filters"><label>公司<select aria-label="岗位公司" value={companyId} onChange={e=>setCompany(e.target.value)}><option value="">全部公司</option>{result?.companyTotals.map(company=><option key={company.companyId} value={company.companyId}>{company.companyName}</option>)}</select></label><label>城市<input aria-label="岗位城市" value={city} maxLength={100} placeholder="全部城市" onChange={e=>setCity(e.target.value)}/></label><label>招聘项目<select aria-label="招聘项目" value={programKind} onChange={e=>setProgram(e.target.value)}><option value="">全部项目</option><option value="autumn">秋招</option><option value="summer_internship">暑期实习</option><option value="daily_internship">日常实习</option><option value="unknown">未注明批次</option></select></label><label>职位性质<select aria-label="职位性质" value={employmentType} onChange={e=>setEmployment(e.target.value)}><option value="">全部性质</option><option value="intern">标题或栏目注明实习</option><option value="full_time">全职</option><option value="unknown">未注明性质</option></select></label><label>毕业年份<select aria-label="毕业年份" value={graduationYear} onChange={e=>setYear(e.target.value)}><option value="">全部年份</option><option value="2027">2027</option><option value="2028">2028</option></select></label><label>有效性<select aria-label="岗位有效性" value={availability} onChange={e=>setAvailability(e.target.value)}><option value="">全部状态</option><option value="accepting">官网标记开放</option><option value="stale">数据过期</option><option value="closed">已关闭</option></select></label><Button size="xs" variant="ghost" disabled={!hasFilters} onClick={clear}>清除筛选</Button></div>
- <div className="catalog-filters" aria-label="已保存筛选">
-  <Button size="sm" variant="outline" disabled={updating||loading||savedActive||draftQuery.trim()!==q} onClick={()=>void updatePreferences({action:'filter',filters})}>保存当前筛选</Button>
-  {savedFilter&&<Button size="sm" variant="ghost" disabled={savedActive} onClick={()=>applyFilters(savedFilter.filters)}>载入已保存筛选</Button>}
-  {savedActive&&result&&<>
+ <form className="catalog-search" onSubmit={search}><Search size={15}/><input aria-label="搜索真实岗位" value={draftQuery} maxLength={100} placeholder="职位或 JD 关键词，多个用逗号分隔" onChange={e=>setDraftQuery(e.target.value)}/><Button size="sm" type="submit">搜索岗位</Button></form>
+ <div className="catalog-filters"><fieldset className="catalog-company-filter"><legend>公司</legend>
+ {health?.sources.map(source=><label className="catalog-toggle" key={source.companyId}>
+  <input type="checkbox" checked={companyId.split(',').includes(source.companyId)}
+   onChange={e=>{const ids=companyId.split(',').filter(Boolean);setCompany((e.target.checked?[...ids,source.companyId]:ids.filter(id=>id!==source.companyId)).join(','));setNewOnly(false);}}/>
+  {source.companyName}
+ </label>)}
+ </fieldset><label>城市<input aria-label="岗位城市" value={city} maxLength={100} placeholder="多个城市用逗号分隔" onChange={e=>setCity(e.target.value)}/></label><label>招聘项目<select aria-label="招聘项目" value={programKind} onChange={e=>setProgram(e.target.value)}><option value="">全部项目</option><option value="autumn">秋招</option><option value="summer_internship">暑期实习</option><option value="daily_internship">日常实习</option><option value="unknown">未注明批次</option></select></label><label>职位性质<select aria-label="职位性质" value={employmentType} onChange={e=>setEmployment(e.target.value)}><option value="">全部性质</option><option value="intern">标题或栏目注明实习</option><option value="full_time">全职</option><option value="unknown">未注明性质</option></select></label><label>毕业年份<select aria-label="毕业年份" value={graduationYear} onChange={e=>setYear(e.target.value)}><option value="">全部年份</option><option value="2027">2027</option><option value="2028">2028</option></select></label><label>有效性<select aria-label="岗位有效性" value={availability} onChange={e=>setAvailability(e.target.value)}><option value="">全部状态</option><option value="accepting">官网标记开放</option><option value="stale">数据过期</option><option value="closed">已关闭</option></select></label><Button size="xs" variant="ghost" disabled={!hasFilters} onClick={clear}>清除筛选</Button></div>
+ <section className="records-panel" aria-label="我的筛选">
+  <h3>我的筛选</h3>
+  <div className="catalog-filters" aria-label="筛选组">
+   <Button size="sm" variant="outline" aria-pressed={!savedFilter} disabled={updating||!preferences}
+    onClick={()=>void updatePreferences({action:'select',filterId:null})}>临时筛选</Button>
+   {preferences?.savedFilters.map(filter=><Button key={filter.id} size="sm" variant={filter.id===savedFilter?.id?'default':'outline'}
+    aria-pressed={filter.id===savedFilter?.id} disabled={updating}
+    onClick={()=>void updatePreferences({action:'select',filterId:filter.id})}>
+    {filter.name}（{result?.filterCounts.find(count=>count.id===filter.id)?.newCount??0} 个新增）
+   </Button>)}
+  </div>
+  <div className="catalog-filters">
+   <label>筛选名称<input value={filterName} maxLength={40} placeholder="例如 后端实习" onChange={e=>setFilterName(e.target.value)}/></label>
+   <Button size="sm" variant="outline" disabled={!result||updating||loading||!filterName.trim()||draftQuery.trim()!==q}
+    onClick={()=>void updatePreferences({action:'create',name:filterName,filters})}>保存为新筛选</Button>
+   {savedFilter&&<>
+    <Button size="sm" variant="outline" disabled={updating||loading||!filterName.trim()||draftQuery.trim()!==q||(savedActive&&filterName.trim()===savedFilter.name)}
+     onClick={()=>void updatePreferences({action:'edit',filterId:savedFilter.id,revision:savedFilter.revision,name:filterName,filters})}>更新这组筛选</Button>
+    <Button size="sm" variant="ghost" disabled={updating} onClick={()=>setConfirmDelete(!confirmDelete)}>{confirmDelete?'取消删除':'删除这组筛选'}</Button>
+    {confirmDelete&&<Button size="sm" variant="destructive" disabled={updating}
+     onClick={()=>void updatePreferences({action:'delete',filterId:savedFilter.id,revision:savedFilter.revision})}>确认删除 {savedFilter.name}</Button>}
+   </>}
+  </div>
+  {savedActive&&result&&<div className="catalog-filters">
    <label className="catalog-toggle"><input type="checkbox" checked={newOnly} onChange={e=>setNewOnly(e.target.checked)}/> 仅看新增（{result.newCount}）</label>
-   <Button size="sm" variant="ghost" disabled={loading||updating||!result.newCount} onClick={()=>void updatePreferences({action:'viewed',filterId:savedFilter.id,through:result.observedAt})}>标记新增为已查看</Button>
-  </>}
- </div>
+   <Button size="sm" variant="ghost" disabled={loading||updating||!result.newCount} onClick={()=>void updatePreferences({action:'viewed',filterId:savedFilter.id,revision:savedFilter.revision,through:result.observedAt})}>标记本组新增为已查看</Button>
+  </div>}
+ </section>
  <p className="muted-note">“实习”不等于“暑期实习”。官网未明确的批次、年份和截止时间保留未知；超过 24 小时未核验的开放岗位标为过期。</p>
  {loading&&!result?<div className="table-empty">正在读取真实岗位目录…</div>:result&&!result.items.length?<div className="table-empty"><BriefcaseBusiness size={25}/><h3>{notSynced?'尚未取得官网岗位数据':newOnly&&savedActive?'没有新增匹配岗位':hasFilters?'没有符合筛选条件的岗位':'官网本次没有返回岗位'}</h3><p>{notSynced?'点击同步官网岗位；同步失败不会生成示例职位。':hasFilters?'可调整筛选；未标注届别的岗位不会匹配具体毕业年份。':'请查看最近成功核验时间和来源状态。'}</p>{hasFilters&&<Button size="sm" variant="outline" onClick={clear}>清除筛选条件</Button>}</div>:<div className="catalog-job-list" aria-busy={loading}>{result?.items.map(job=><article key={job.id}><div className="catalog-job-main"><button className="catalog-job-title" onClick={()=>void show(job)}>{job.title}</button><p>{job.companyName} · {job.locations.join(' / ')||'地点未注明'} · {job.department||'部门未注明'}</p><div className="catalog-badges">{savedActive&&job.isNew&&<span className="badge job-accepting">新增匹配</span>}<span className={`badge job-${job.availability}`}>{labels[job.availability]}</span><span className="badge">批次：{labels[job.programKind]}</span>{job.graduationLabel&&<span className="badge">官网标题：{job.graduationLabel}</span>}<span className="muted-note">核验 {time(job.lastVerifiedAt)}</span></div></div><div className="catalog-job-actions"><Button size="xs" variant="outline" onClick={()=>void show(job)}>查看职位</Button><Button size="xs" variant="ghost" disabled={saving===job.id||!!job.savedApplicationId} onClick={()=>void save(job)}><Bookmark size={12}/>{job.savedApplicationId?'已加入申请':'加入待投递'}</Button><a className="small-link" href={job.originalUrl} target="_blank" rel="noreferrer">官网 <ArrowUpRight size={12}/></a></div></article>)}</div>}
  {result?.nextCursor&&<Button size="sm" variant="outline" disabled={loading} onClick={()=>void more()}>{loading?'读取中…':'加载更多岗位'}</Button>}

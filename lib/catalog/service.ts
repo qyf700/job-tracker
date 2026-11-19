@@ -1,13 +1,14 @@
 import {env} from 'cloudflare:workers';
-import {and,asc,desc,eq,gt,isNull,lt,ne,or,sql} from 'drizzle-orm';
+import {and,asc,desc,eq,gt,inArray,isNull,lt,lte,ne,or,sql} from 'drizzle-orm';
 import {z} from 'zod';
 import {getDb} from '../../db';
 import {companies,companySources,jobs,catalogSyncRuns,catalogSavedJobs,applications} from '../../db/schema';
 import {sha256} from '../m1/files';
 import {CatalogError,mokaSources,readZhihuJobs} from './moka';
 import {guardedJobUpsert} from './queries.mjs';
-import {filterSchema, sameFilters} from './filters';
-import {readCatalogPreferences} from './preferences';
+import {filterSchema, sameFilters, type CatalogFilters} from './filters';
+import {readCatalogPreferences, readCatalogSettings} from './preferences';
+import {nextSourceSync} from './schedule';
 
 export function canScheduleCatalog(userId: string) {
  return env.LOCAL_CATALOG === '1' && userId === 'local_seedy';
@@ -30,8 +31,35 @@ export function publicJob(row:typeof jobs.$inferSelect,detail=false,freshnessSec
  return {...value,companyName:mokaSources.find(source=>source.orgId===row.companyId)?.companyName??row.companyId,locations:JSON.parse(locationsJson) as string[],availability:effectiveAvailability(row,freshnessSeconds),...(detail?{jdText,evidence:JSON.parse(evidenceJson),contentHash}:{})};
 }
 export async function sourceSummary(userId:string){
- const db=getDb(),rows=await db.select().from(companySources);const runs=await db.select().from(catalogSyncRuns).orderBy(desc(catalogSyncRuns.startedAt)).limit(10);
- return {canSync:isCatalogAdmin(userId),canSchedule:canScheduleCatalog(userId),preferences:await readCatalogPreferences(userId),sources:mokaSources.map(source=>({id:source.id,companyId:source.orgId,companyName:source.companyName,entryUrl:source.entryUrl,freshnessSeconds:86400,...rows.find(row=>row.id===source.id),state:rows.some(row=>row.id===source.id&&row.lastSuccessAt)?'available':'not_synced'})).map(({leaseRunId,...row})=>({...row,running:!!leaseRunId&&!!row.leaseExpiresAt&&row.leaseExpiresAt>new Date().toISOString()})),runs};
+ const db = getDb();
+ const [rows, runs, preferences] = await Promise.all([
+  db.select().from(companySources),
+  db.select().from(catalogSyncRuns).orderBy(desc(catalogSyncRuns.startedAt)).limit(10),
+  readCatalogPreferences(userId),
+ ]);
+ const latestIds = rows.flatMap(row => [row.leaseRunId, row.lastRunId].filter((id): id is string => !!id));
+ const latest = latestIds.length ? await db.select().from(catalogSyncRuns).where(inArray(catalogSyncRuns.id, latestIds)) : [];
+ const canSchedule = canScheduleCatalog(userId);
+ const now = Date.now();
+ const sources = mokaSources.map(source => {
+  const row = rows.find(item => item.id === source.id);
+  const selected = canSchedule && preferences.sourceIds.includes(source.id);
+  const next = selected ? nextSourceSync(row, preferences.intervalHours, now) : null;
+  const running = !!row?.leaseRunId && !!row.leaseExpiresAt && Date.parse(row.leaseExpiresAt) > now;
+  const lastRun = latest.find(run => run.id === row?.lastRunId);
+  const runningRun = running ? latest.find(run => run.id === row?.leaseRunId) : undefined;
+  return {
+   id: source.id, companyId: source.orgId, companyName: source.companyName, entryUrl: source.entryUrl,
+   freshnessSeconds: row?.freshnessSeconds ?? 86400, state: row?.lastSuccessAt ? 'available' : 'not_synced',
+   lastSuccessAt: row?.lastSuccessAt ?? null, lastErrorAt: row?.lastErrorAt ?? null,
+   lastErrorMessage: row?.lastErrorMessage ?? null, lastErrorCode: row?.lastErrorCode ?? null,
+   lastRunId: row?.lastRunId ?? null, leaseExpiresAt: row?.leaseExpiresAt ?? null, adapterKey: row?.adapterKey,
+   running, selected,
+   nextUpdateAt: next === null ? null : new Date(next).toISOString(), due: next !== null && next <= now,
+   latestRun: runningRun ?? lastRun ?? null,
+  };
+ });
+ return {canSync: isCatalogAdmin(userId), canSchedule, preferences, sources, runs};
 }
 export async function syncSource(userId:string,id:string){
  if(!isCatalogAdmin(userId))throw new CatalogError('forbidden','只有目录管理员可以触发同步',403);
@@ -66,7 +94,7 @@ export async function syncSource(userId:string,id:string){
  }
 }
 export async function syncDueSources(userId: string, initialOnly: boolean) {
- const preferences = await readCatalogPreferences(userId);
+ const preferences = await readCatalogSettings(userId);
  if (!initialOnly && !preferences.intervalHours) return [];
 
  const sources = await getDb().select().from(companySources);
@@ -74,10 +102,8 @@ export async function syncDueSources(userId: string, initialOnly: boolean) {
  const results = [];
  for (const id of preferences.sourceIds) {
   const source = sources.find(item => item.id === id);
-  const lastSuccess = source?.lastSuccessAt;
-  if (lastSuccess && (initialOnly || now - Date.parse(lastSuccess) < preferences.intervalHours * 3600000)) continue;
-  if (source?.lastErrorAt && now - Date.parse(source.lastErrorAt) < 15 * 60000) continue;
-  if (source?.leaseRunId && source.leaseExpiresAt && Date.parse(source.leaseExpiresAt) > now) continue;
+  const next = nextSourceSync(source, preferences.intervalHours, now, initialOnly);
+  if (next === null || next > now) continue;
   try {
    results.push({sourceId: id, ...await syncSource(userId, id)});
   } catch (error) {
@@ -92,25 +118,54 @@ const querySchema = filterSchema.extend({
  limit: z.coerce.number().int().min(1).max(100).default(20),
  cursor: z.string().max(300).default(''),
  newOnly: z.enum(['0', '1']).default('0'),
+ filterId: z.string().uuid().optional(),
 });
+function searchTerms(value: string) {
+ return [...new Set(value.split(/[,，]/).map(term => term.trim()).filter(Boolean))];
+}
+
+function jobConditions(filters: CatalogFilters, threshold: string) {
+ const clauses = [];
+ const companyIds = searchTerms(filters.companyId);
+ const keywords = searchTerms(filters.q);
+ const cities = searchTerms(filters.city);
+ if (companyIds.length) clauses.push(inArray(jobs.companyId, companyIds));
+ if (filters.programKind) clauses.push(eq(jobs.programKind, filters.programKind));
+ if (filters.employmentType) clauses.push(eq(jobs.employmentType, filters.employmentType));
+ if (filters.graduationYear) clauses.push(eq(jobs.graduationYear, Number(filters.graduationYear)));
+ if (keywords.length) clauses.push(sql`EXISTS (SELECT 1 FROM json_each(${JSON.stringify(keywords)}) AS term
+  WHERE instr(lower(${jobs.title}), lower(term.value)) > 0 OR instr(lower(${jobs.jdText}), lower(term.value)) > 0)`);
+ if (cities.length) clauses.push(sql`EXISTS (SELECT 1 FROM json_each(${jobs.locationsJson}) AS location
+  JOIN json_each(${JSON.stringify(cities)}) AS city ON instr(location.value, city.value) > 0)`);
+ if (filters.availability === 'stale') clauses.push(and(ne(jobs.availability,'closed'),lt(jobs.lastVerifiedAt,threshold)));
+ else if (filters.availability) {
+  clauses.push(eq(jobs.availability,filters.availability));
+  if (filters.availability !== 'closed') clauses.push(sql`${jobs.lastVerifiedAt} >= ${threshold}`);
+ }
+ return clauses;
+}
+
 export async function listJobs(params:URLSearchParams,ownerId:string){
- const parsed=querySchema.safeParse(Object.fromEntries(params));if(!parsed.success)throw new CatalogError('invalid_filters','筛选参数无效',422);const p=parsed.data,db=getDb(),clauses=[];
+ const parsed = querySchema.safeParse(Object.fromEntries(params));
+ if (!parsed.success) throw new CatalogError('invalid_filters','筛选参数无效',422);
+ const p = parsed.data, db = getDb();
  const observedAt = new Date().toISOString();
+ const threshold = new Date(Date.parse(observedAt) - 86400000).toISOString();
  const sourceHealth = await sourceSummary(ownerId);
- const savedFilter = sourceHealth.preferences.savedFilter;
- const activeFilter = savedFilter && sameFilters(savedFilter.filters, p) ? savedFilter : null;
+ const {savedFilters, activeFilterId} = sourceHealth.preferences;
+ const selected = savedFilters.find(filter => filter.id === (p.filterId ?? activeFilterId));
+ const activeFilter = selected && sameFilters(selected.filters, p) ? selected : null;
  if (p.newOnly === '1' && !activeFilter) throw new CatalogError('filter_changed', '请重新载入已保存筛选', 409);
- if(p.companyId)clauses.push(eq(jobs.companyId,p.companyId));if(p.programKind)clauses.push(eq(jobs.programKind,p.programKind));if(p.employmentType)clauses.push(eq(jobs.employmentType,p.employmentType));if(p.graduationYear)clauses.push(eq(jobs.graduationYear,Number(p.graduationYear)));
- if(p.q)clauses.push(sql`(instr(lower(${jobs.title}),lower(${p.q}))>0 OR instr(lower(${jobs.jdText}),lower(${p.q}))>0)`);
- if(p.city)clauses.push(sql`EXISTS (SELECT 1 FROM json_each(${jobs.locationsJson}) WHERE instr(value,${p.city})>0)`);
- const threshold=new Date(Date.now()-86400000).toISOString();
- if(p.availability==='stale')clauses.push(and(ne(jobs.availability,'closed'),lt(jobs.lastVerifiedAt,threshold))!);
- else if(p.availability){clauses.push(eq(jobs.availability,p.availability));if(p.availability!=='closed')clauses.push(gt(jobs.lastVerifiedAt,threshold));}
- const isNew = activeFilter
-  ? and(gt(jobs.firstSeenAt, activeFilter.viewedThrough), sql`${jobs.firstSeenAt} <= ${observedAt}`)!
-  : null;
- const newCount = isNew ? await db.$count(jobs, and(...clauses, isNew)) : 0;
- if (p.newOnly === '1' && isNew) clauses.push(isNew);
+ const clauses = jobConditions(p, threshold);
+ const counts = await Promise.all(savedFilters.map(async filter => ({
+  id: filter.id,
+  newCount: await db.$count(jobs, and(...jobConditions(filter.filters, threshold),
+   gt(jobs.firstSeenAt, filter.viewedThrough), lte(jobs.firstSeenAt, observedAt))),
+ })));
+ const newCount = counts.find(count => count.id === activeFilter?.id)?.newCount ?? 0;
+ if (p.newOnly === '1' && activeFilter) {
+  clauses.push(gt(jobs.firstSeenAt, activeFilter.viewedThrough), lte(jobs.firstSeenAt, observedAt));
+ }
  if(p.cursor){let id;try{id=z.object({id:z.string().min(1).max(150)}).strict().parse(JSON.parse(atob(p.cursor))).id;}catch{throw new CatalogError('invalid_cursor','分页标识无效',422);}clauses.push(gt(jobs.id,id));}
  const rows=await db.select().from(jobs).where(and(...clauses)).orderBy(asc(jobs.id)).limit(p.limit+1),hasMore=rows.length>p.limit,items=rows.slice(0,p.limit);
  const saved=await db.select().from(catalogSavedJobs).where(eq(catalogSavedJobs.ownerId,ownerId));
@@ -122,7 +177,7 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
   stale: sql<number>`sum(case when ${jobs.availability} <> 'closed' and ${jobs.lastVerifiedAt} < ${threshold} then 1 else 0 end)`,
   lastVerifiedAt: sql<string | null>`max(${jobs.lastVerifiedAt})`,
  }).from(companies).leftJoin(jobs, eq(jobs.companyId, companies.id)).groupBy(companies.id, companies.name);
- return {companyTotals,newCount,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.find(s=>s.jobId===row.id)?.applicationId||null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
+ return {companyTotals,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.find(s=>s.jobId===row.id)?.applicationId||null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
 }
 export async function jobDetail(id:string,ownerId:string){const db=getDb(),row=(await db.select().from(jobs).where(eq(jobs.id,id)))[0];if(!row)throw new CatalogError('job_not_found','岗位不存在',404);const saved=(await db.select().from(catalogSavedJobs).where(and(eq(catalogSavedJobs.jobId,id),eq(catalogSavedJobs.ownerId,ownerId))))[0];return {...publicJob(row,true),savedApplicationId:saved?.applicationId||null};}
 export async function saveJob(id:string,ownerId:string){
