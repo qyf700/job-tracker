@@ -86,7 +86,7 @@ export const jobs = sqliteTable('jobs', {
  jdText:text('jd_text').notNull(),originalUrl:text('original_url').notNull(),applyUrl:text('apply_url').notNull(),deadlineAt:text('deadline_at'),publishedAt:text('published_at'),availability:text('availability').notNull(),evidenceJson:text('evidence_json').notNull(),contentHash:text('content_hash').notNull(),firstSeenAt:text('first_seen_at').notNull(),lastSeenAt:text('last_seen_at').notNull(),lastVerifiedAt:text('last_verified_at').notNull(),closedAt:text('closed_at'),lastSeenRunId:text('last_seen_run_id').notNull(),reopenedAt:text('reopened_at'),
 },t=>[uniqueIndex('jobs_source_external').on(t.sourceId,t.externalJobId),index('jobs_company_availability').on(t.companyId,t.availability)]);
 export const catalogSyncRuns = sqliteTable('catalog_sync_runs', {
- id:text('id').primaryKey(),sourceId:text('source_id').notNull().references(()=>companySources.id),state:text('state').notNull(),startedAt:text('started_at').notNull(),finishedAt:text('finished_at'),seenCount:integer('seen_count').notNull().default(0),errorCode:text('error_code'),errorMessage:text('error_message'),
+ id:text('id').primaryKey(),sourceId:text('source_id').notNull().references(()=>companySources.id),state:text('state').notNull(),startedAt:text('started_at').notNull(),finishedAt:text('finished_at'),reviewHash:text('review_hash'),seenCount:integer('seen_count').notNull().default(0),errorCode:text('error_code'),errorMessage:text('error_message'),
 },t=>[index('catalog_runs_source_started').on(t.sourceId,t.startedAt)]);
 export const catalogSavedJobs = sqliteTable('catalog_saved_jobs', {
  ownerId:text('owner_id').notNull(),jobId:text('job_id').notNull().references(()=>jobs.id),applicationId:text('application_id').notNull().references(()=>applications.id),savedAt:text('saved_at').notNull(),
@@ -138,5 +138,16 @@ export const catalogFilters = sqliteTable('catalog_filters', {
   name: text('name').notNull(),
   filterJson: text('filter_json').notNull(),
   viewedThrough: text('viewed_through').notNull(),
+  subscribedAt: text('subscribed_at'),
   revision: integer('revision').notNull().default(1),
 }, table => [index('catalog_filters_owner').on(table.ownerId)]);
+
+export const notificationReads = sqliteTable('notification_reads', {
+  ownerId: text('owner_id').notNull(),
+  eventId: text('event_id').notNull(),
+}, table => [uniqueIndex('notification_reads_owner_event').on(table.ownerId, table.eventId)]);
+
+export const notificationPreferences = sqliteTable('notification_preferences', {
+  ownerId: text('owner_id').primaryKey(),
+  mutedKindsJson: text('muted_kinds_json').notNull().default('[]'),
+});

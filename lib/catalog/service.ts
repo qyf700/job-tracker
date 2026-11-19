@@ -72,9 +72,23 @@ export async function syncSource(userId:string,id:string){
  if(!lease.length)throw new CatalogError('sync_running','此来源正在同步，请稍后刷新',409);
  // A successful run has a cooldown; failures remain explicitly retryable.
  if(lease[0].lastSuccessAt&&Date.now()-Date.parse(lease[0].lastSuccessAt)<60000){await db.update(companySources).set({leaseRunId:null,leaseExpiresAt:null}).where(and(eq(companySources.id,id),eq(companySources.leaseRunId,runId)));throw new CatalogError('sync_cooldown','刚刚同步成功，请一分钟后再同步',429);}
- await db.insert(catalogSyncRuns).values({id:runId,sourceId:id,state:'running',startedAt});
+ let reviewHash: string | null = null;
  try{
+  await db.insert(catalogSyncRuns).values({id:runId,sourceId:id,state:'running',startedAt});
   const normalized=await source.read(),finishedAt=new Date().toISOString();
+  const previous = await db.$count(jobs, and(eq(jobs.sourceId,id),ne(jobs.availability,'closed')));
+  const openIds = normalized.filter(job=>job.availability==='accepting').map(job=>job.externalJobId).sort();
+  if (previous > 0 && (openIds.length === 0 || openIds.length * 2 < previous)) {
+   const fingerprint = await sha256(new TextEncoder().encode(JSON.stringify(openIds)));
+   const priorRun = lease[0].lastRunId
+    ? await db.select({reviewHash:catalogSyncRuns.reviewHash}).from(catalogSyncRuns)
+     .where(eq(catalogSyncRuns.id,lease[0].lastRunId)).get()
+    : undefined;
+   if (priorRun?.reviewHash !== fingerprint) {
+    reviewHash = fingerprint;
+    throw new CatalogError('source_needs_confirmation','官网开放岗位数量异常下降，保留上次目录，等待再次核验');
+   }
+  }
   const rows=await Promise.all(normalized.map(async job=>({
    id:`${source.id}:${job.externalJobId}`,sourceId:id,externalJobId:job.externalJobId,companyId:source.orgId,programId:null,
    title:job.title,department:job.department,locationsJson:JSON.stringify(job.locations),employmentType:job.employmentType,programKind:job.programKind,graduationYear:job.graduationYear,graduationLabel:job.graduationLabel,sourceCategory:job.sourceCategory,
@@ -91,7 +105,7 @@ export async function syncSource(userId:string,id:string){
   return {id:runId,state:'succeeded',seenCount:rows.length,startedAt,finishedAt};
  }catch(error){
   const known=error instanceof CatalogError?error:new CatalogError(error instanceof z.ZodError||error instanceof SyntaxError?'source_shape_changed':'source_unavailable','公开岗位来源暂时无法完成核验，未覆盖上次成功目录');
-  const finishedAt=new Date().toISOString();await db.batch([db.update(catalogSyncRuns).set({state:'failed',finishedAt,errorCode:known.code,errorMessage:known.message}).where(eq(catalogSyncRuns.id,runId)),db.update(companySources).set({lastErrorAt:finishedAt,lastErrorCode:known.code,lastErrorMessage:known.message,lastRunId:runId,leaseRunId:null,leaseExpiresAt:null}).where(and(eq(companySources.id,id),eq(companySources.leaseRunId,runId)))]);
+  const finishedAt=new Date().toISOString();await db.batch([db.update(catalogSyncRuns).set({state:'failed',finishedAt,reviewHash,errorCode:known.code,errorMessage:known.message}).where(eq(catalogSyncRuns.id,runId)),db.update(companySources).set({lastErrorAt:finishedAt,lastErrorCode:known.code,lastErrorMessage:known.message,lastRunId:runId,leaseRunId:null,leaseExpiresAt:null}).where(and(eq(companySources.id,id),eq(companySources.leaseRunId,runId)))]);
   throw known;
  }
 }
@@ -138,7 +152,7 @@ function searchTerms(value: string) {
  return [...new Set(value.split(/[,，]/).map(term => term.trim()).filter(Boolean))];
 }
 
-function jobConditions(filters: CatalogFilters, threshold: string) {
+export function jobConditions(filters: CatalogFilters, threshold: string) {
  const clauses = [];
  const companyIds = searchTerms(filters.companyId);
  const keywords = searchTerms(filters.q);

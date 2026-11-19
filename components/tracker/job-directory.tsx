@@ -15,7 +15,7 @@ function progressLabel(progress:ApplicationProgress){
 type Job={applicationProgress:ApplicationProgress|null;id:string;isNew?:boolean;firstSeenAt:string;reopenedAt:string|null;closedAt:string|null;title:string;companyName:string;locations:string[];department:string;employmentType:string;programKind:string;graduationYear:number|null;graduationLabel:string;sourceCategory:string;availability:string;publishedAt:string|null;lastVerifiedAt:string;deadlineAt:string|null;originalUrl:string;applyUrl:string;savedApplicationId:string|null;jdText?:string;evidence?:{sourceStatus?:string;reason?:string;classification?:string;graduationEvidence?:string}};
 type SyncRun={id:string;state:string;seenCount:number;startedAt:string;finishedAt:string|null};
 type Source={label:string;id:string;companyId:string;companyName:string;entryUrl:string;lastSuccessAt:string|null;lastErrorMessage:string|null;lastErrorAt:string|null;running:boolean;selected:boolean;nextUpdateAt:string|null;due:boolean;latestRun:SyncRun|null};
-type SavedFilter={id:string;name:string;revision:number;filters:CatalogFilters;viewedThrough:string};
+type SavedFilter={id:string;name:string;revision:number;filters:CatalogFilters;viewedThrough:string;subscribedAt:string|null};
 type Preferences={sourceIds:string[];intervalHours:number;activeFilterId:string|null;savedFilters:SavedFilter[]};
 type Health={preferences:Preferences;canSchedule:boolean;sources:Source[];canSync:boolean};
 type Company={companyId:string;companyName:string;open:number;intern:number;autumn:number;recent:number;matching:number;stale:number;firstSeenAt:string|null;lastVerifiedAt:string|null};
@@ -24,8 +24,16 @@ type Result={discoverySince:string;newCount:number;filterCounts:{id:string;newCo
 const labels:Record<string,string>={accepting:'官网标记开放',visible_unverified:'待核实',closed:'已关闭',stale:'数据过期',unknown:'未注明',autumn:'秋招',summer_internship:'暑期实习',daily_internship:'日常实习',other:'其他'};
 function time(value:string|null|undefined){return value?new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'尚无成功同步';}
 function message(e:unknown){return e instanceof Error?e.message:'操作失败，请重试';}
-export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>void;onViewApplications:()=>void}){
+export default function JobDirectory({onSaved,onViewApplications,jobRequest}:{onSaved:()=>void;onViewApplications:()=>void;jobRequest:{id:string}|null}){
  const [result,setResult]=useState<Result|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState(''),[syncing,setSyncing]=useState<string|null>(null),[saving,setSaving]=useState(''),[detail,setDetail]=useState<Job|null>(null);
+ useEffect(()=>{
+  if(!jobRequest)return;
+  const controller=new AbortController();
+  void api<Job>('/api/jobs/'+encodeURIComponent(jobRequest.id),{signal:controller.signal})
+   .then(job=>{if(!controller.signal.aborted)setDetail(job);})
+   .catch(e=>{if(!controller.signal.aborted)setError(message(e));});
+  return()=>controller.abort();
+ },[jobRequest]);
  const [draftQuery,setDraftQuery]=useState(''),[q,setQ]=useState(''),[companyId,setCompany]=useState(''),[city,setCity]=useState(''),[programKind,setProgram]=useState(''),[employmentType,setEmployment]=useState(''),[graduationYear,setYear]=useState(''),[availability,setAvailability]=useState(''),[refresh,setRefresh]=useState(0);
  const generation=useRef(0), restored=useRef(false);
  const [discoverySince,setDiscoverySince]=useState('');
@@ -195,7 +203,7 @@ export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>v
   <h3>招聘源同步状态</h3>
   {health.sources.map(source=>{
    const run=source.latestRun;
-   const status=source.running?'同步中':run?.state==='failed'?'同步失败':run?.state==='succeeded'?`成功 · ${run.seenCount} 个岗位`:'尚未同步';
+   const status=source.running?'同步中':run?.state==='failed'?'同步失败':run?.state==='succeeded'?(run.seenCount?`成功 · ${run.seenCount} 个岗位`:'暂无开放岗位'):'尚未同步';
    const next=source.nextUpdateAt?(source.running?'本次同步结束后计算':source.due?'已到期，等待后台检查':time(source.nextUpdateAt)):
     health.canSchedule?'定时更新已暂停':'未启用自动更新';
    return <article className="catalog-source" key={source.id}>
@@ -236,6 +244,10 @@ export default function JobDirectory({onSaved,onViewApplications}:{onSaved:()=>v
    <Button size="sm" variant="outline" disabled={!result||updating||loading||!filterName.trim()||draftQuery.trim()!==q}
     onClick={()=>void updatePreferences({action:'create',name:filterName,filters})}>保存为新筛选</Button>
    {savedFilter&&<>
+    <Button size="sm" variant="outline" aria-pressed={!!savedFilter.subscribedAt} disabled={updating}
+     onClick={()=>void updatePreferences({action:'subscribe',filterId:savedFilter.id,revision:savedFilter.revision,enabled:!savedFilter.subscribedAt})}>
+     {savedFilter.subscribedAt?'取消订阅新岗位':'订阅新岗位'}
+    </Button>
     <Button size="sm" variant="outline" disabled={updating||loading||!filterName.trim()||draftQuery.trim()!==q||(savedActive&&filterName.trim()===savedFilter.name)}
      onClick={()=>void updatePreferences({action:'edit',filterId:savedFilter.id,revision:savedFilter.revision,name:filterName,filters})}>更新这组筛选</Button>
     <Button size="sm" variant="ghost" disabled={updating} onClick={()=>setConfirmDelete(!confirmDelete)}>{confirmDelete?'取消删除':'删除这组筛选'}</Button>

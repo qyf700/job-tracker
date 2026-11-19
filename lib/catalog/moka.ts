@@ -11,6 +11,9 @@ export const mokaSources=[
  {id:'agora-moka-campus',orgId:'agora',siteId:'4789',companyName:'声网',entryUrl:'https://app.mokahr.com/campus_apply/agora/4789'},
  {id:'sohu-moka-campus',orgId:'sohu',siteId:'5682',companyName:'搜狐',entryUrl:'https://app.mokahr.com/campus-recruitment/sohu/5682'},
  {id:'aobi-moka-campus',orgId:'aobi',siteId:'25016',companyName:'百奥家庭互动',entryUrl:'https://app.mokahr.com/campus_apply/aobi/25016'},
+ {id:'sina-moka-campus',orgId:'sina',siteId:'43536',companyName:'新浪集团',entryUrl:'https://app.mokahr.com/campus-recruitment/sina/43536'},
+ {id:'voyah-moka-campus',orgId:'voyah',siteId:'146293',companyName:'岚图汽车',entryUrl:'https://app.mokahr.com/campus-recruitment/voyah/146293'},
+ {id:'kfconcept-moka-campus',orgId:'kfconcept',siteId:'144795',companyName:'卓尔摄影',entryUrl:'https://app.mokahr.com/campus-recruitment/kfconcept/144795'},
 ];
 const ORIGIN='https://app.mokahr.com';
 const API='/api/outer/ats-apply/website/';

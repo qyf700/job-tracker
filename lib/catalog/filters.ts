@@ -2,7 +2,7 @@ import {z} from 'zod';
 
 export const filterSchema = z.object({
   q: z.string().trim().max(100).default(''),
-  companyId: z.string().max(100).default(''),
+  companyId: z.string().max(400).default(''),
   city: z.string().trim().max(100).default(''),
   programKind: z.enum(['', 'unknown', 'autumn', 'summer_internship', 'daily_internship', 'other']).default(''),
   employmentType: z.enum(['', 'intern', 'full_time', 'unknown']).default(''),

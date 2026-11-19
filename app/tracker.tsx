@@ -12,6 +12,7 @@ import { api, emptyForm, followUpBucket, isDue, shanghaiDate, statusLabels, toFo
 import InterviewPanel from '@/components/tracker/interviews';
 import {ProfilePanel} from '@/components/tracker/profile';
 import JobDirectory from '@/components/tracker/job-directory';
+import Notifications from '@/components/tracker/notifications';
 import ResumeCenter from '@/components/tracker/resumes';
 import type {ProfileDraft} from '@/components/tracker/profile-history';
 
@@ -25,12 +26,13 @@ export default function Tracker() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [loaded, setLoaded] = useState(false);
+  const [jobRequest, setJobRequest] = useState<{id:string}|null>(null);
   const [view, setView] = useState<View>('discover');
   const [detailTab,setDetailTab]=useState<'info'|'interviews'>('info');
   const [profileDirty,setProfileDirty]=useState(false);
   const [profileDraft,setProfileDraft]=useState<ProfileDraft|null>(null);
   const viewTitles={companies:'已投企业',discover:'发现岗位',all:'投递台账',today:'今日待办',schedule:'面试日程',resume:'简历中心',profile:'个人资料'};
-  function switchView(next:View){if(profileDirty&&!confirm('有未保存的资料或材料选择，放弃修改并切换？'))return;setProfileDirty(false);setView(next);resetFilters();if(view==='discover'&&next!=='discover')void load();}
+  function switchView(next:View){if(profileDirty&&!confirm('有未保存的资料或材料选择，放弃修改并切换？'))return false;setProfileDirty(false);setView(next);resetFilters();if(view==='discover'&&next!=='discover'){setJobRequest(null);void load();}return true;}
   const [companyFilter,setCompanyFilter]=useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
@@ -88,6 +90,22 @@ export default function Tracker() {
     setDetailTab('info'); setEditing(item ?? null); setAppliedTime(item?.appliedAt ? localDateTime(item.appliedAt) : ''); setForm(next); setInitialForm(JSON.stringify(next));
     setDrawerError(''); setActionEdit(null); setOpen(true);
   }
+  async function openNotificationApplication(id: string, showInterviews: boolean) {
+    if (saving || (open && (JSON.stringify(form) !== initialForm || hasUnsavedAppliedTime)
+      && !confirm('放弃尚未保存的修改？'))) return false;
+    const result = await api<{items:Application[]}>('/api/applications');
+    const item = result.items.find(application => application.id === id);
+    if (!item) throw new Error('这条投递已归档或删除。');
+    setItems(result.items);
+    start(item);
+    if (showInterviews) setDetailTab('interviews');
+    return true;
+  }
+  function openNotificationJob(id: string) {
+    if (!switchView('discover')) return false;
+    setJobRequest({id});
+    return true;
+  }
   function changeOpen(value:boolean) {
     if (saving) return;
     if (!value && (JSON.stringify(form) !== initialForm || hasUnsavedAppliedTime) && !confirm('放弃尚未保存的修改？')) return;
@@ -142,7 +160,7 @@ export default function Tracker() {
     </aside>
 
     <main className="main-area">
-      <header className="breadcrumb"><span>工作空间</span><ChevronRight size={13}/><strong>{viewTitles[view]}</strong></header>
+      <header className="breadcrumb"><span>工作空间</span><ChevronRight size={13}/><strong>{viewTitles[view]}</strong><Notifications onOpenApplication={openNotificationApplication} onOpenJob={openNotificationJob}/></header>
       {(view==='all'||view==='today'||view==='companies')&&<><section className="page-title"><div><h1>{viewTitles[view]}</h1><p>{view==='companies'?'查看已经投过的企业及其岗位进度。':view==='all'?'管理岗位与申请进度，记录每次跟进。':'显示今日到期和逾期的未结束岗位行动。'}</p></div><Button size="sm" onClick={()=>start()}><Plus size={15}/>新增岗位</Button></section>
 
       {view==='companies'&&loaded&&<section className="records-panel" aria-label="已投企业汇总">
@@ -175,7 +193,7 @@ export default function Tracker() {
         </TableRow>)}</TableBody></Table>
         <div className="table-footer"><span>{loaded?`共 ${rows.length} 条${filtersActive?'筛选结果':''}`:'尚未加载'}{rows.length>0?` · 显示 ${(currentPage-1)*PAGE_SIZE+1}–${Math.min(currentPage*PAGE_SIZE,rows.length)} 条`:''}</span><div><span>{currentPage} / {pageCount}</span><Button variant="outline" size="icon-xs" aria-label="上一页" disabled={currentPage<=1} onClick={()=>setPage(currentPage-1)}><ChevronLeft size={13}/></Button><Button variant="outline" size="icon-xs" aria-label="下一页" disabled={currentPage>=pageCount} onClick={()=>setPage(currentPage+1)}><ChevronRight size={13}/></Button></div></div>
       </section></>}
-      {view==='discover'&&<div className="feature-page"><JobDirectory onSaved={()=>void load()} onViewApplications={()=>switchView('all')}/></div>}
+      {view==='discover'&&<div className="feature-page"><JobDirectory jobRequest={jobRequest} onSaved={()=>void load()} onViewApplications={()=>switchView('all')}/></div>}
       {view==='schedule'&&<div className="feature-page"><InterviewPanel applications={items}/></div>}
       {view==='resume'&&<div className="feature-page"><ResumeCenter onEditProfile={()=>switchView('profile')} onImportDraft={draft=>{setProfileDraft(draft);switchView('profile');}}/></div>}
       {view==='profile'&&<div className="feature-page"><ProfilePanel onPrepare={()=>switchView('discover')} onOpenResumes={()=>switchView('resume')} onDirtyChange={setProfileDirty} initialDraft={profileDraft} onDraftConsumed={()=>setProfileDraft(null)}/></div>}

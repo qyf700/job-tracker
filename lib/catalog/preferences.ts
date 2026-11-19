@@ -22,6 +22,7 @@ const updateSchema = z.discriminatedUnion('action', [
   z.object({action: z.literal('edit'), filterId, name, filters: filterSchema, revision}).strict(),
   z.object({action: z.literal('select'), filterId: filterId.nullable()}).strict(),
   z.object({action: z.literal('delete'), filterId, revision}).strict(),
+  z.object({action: z.literal('subscribe'), filterId, revision, enabled: z.boolean()}).strict(),
   z.object({action: z.literal('viewed'), filterId, revision, through: z.string().datetime()}).strict(),
 ]);
 
@@ -43,8 +44,8 @@ export async function readCatalogPreferences(ownerId: string) {
   ]);
   return {
     ...settings,
-    savedFilters: filters.map(({id, name, revision, viewedThrough, filterJson}) => ({
-      id, name, revision, viewedThrough, filters: filterSchema.parse(JSON.parse(filterJson)),
+    savedFilters: filters.map(({id, name, revision, viewedThrough, subscribedAt, filterJson}) => ({
+      id, name, revision, viewedThrough, subscribedAt, filters: filterSchema.parse(JSON.parse(filterJson)),
     })),
   };
 }
@@ -57,7 +58,7 @@ export async function writeCatalogPreferences(ownerId: string, body: unknown, ca
   const owner = eq(catalogPreferences.ownerId, ownerId);
   const filterOwner = eq(catalogFilters.ownerId, ownerId);
   const conflict = () => new CatalogError('filter_changed', '已保存筛选发生变化，请刷新目录', 409);
-  const useFilter = (activeFilterId: string | null) => db.insert(catalogPreferences)
+  const setActiveFilter = (activeFilterId: string | null) => db.insert(catalogPreferences)
     .values({ownerId, activeFilterId}).onConflictDoUpdate({target: catalogPreferences.ownerId, set: {activeFilterId}});
 
   switch (update.action) {
@@ -75,7 +76,8 @@ export async function writeCatalogPreferences(ownerId: string, body: unknown, ca
         db.insert(catalogFilters).select(db.select({
           id: sql`${id}`.as('id'), ownerId: sql`${ownerId}`.as('ownerId'),
           name: sql`${update.name}`.as('name'), filterJson: sql`${JSON.stringify(update.filters)}`.as('filterJson'),
-          viewedThrough: sql`${new Date().toISOString()}`.as('viewedThrough'), revision: sql`1`.as('revision'),
+          viewedThrough: sql`${new Date().toISOString()}`.as('viewedThrough'),
+          subscribedAt: sql`null`.as('subscribedAt'), revision: sql`1`.as('revision'),
         }).from(sql`(select 1)`).where(sql`(select count(*) from catalog_filters where owner_id = ${ownerId}) < 20`)).returning(),
         db.insert(catalogPreferences).select(
           db.select({
@@ -95,10 +97,11 @@ export async function writeCatalogPreferences(ownerId: string, body: unknown, ca
         )).returning();
         if (!rows.length) throw conflict();
       } else {
-        await useFilter(null);
+        await setActiveFilter(null);
       }
       break;
     }
+    case 'subscribe':
     case 'edit':
     case 'viewed':
     case 'delete': {
@@ -111,11 +114,19 @@ export async function writeCatalogPreferences(ownerId: string, body: unknown, ca
             sql`not exists (select 1 from catalog_filters where id = ${update.filterId})`)),
         ]);
         if (!removed.length) throw conflict();
+      } else if (update.action === 'subscribe') {
+        const rows = await db.update(catalogFilters).set({
+          subscribedAt: update.enabled ? sql`coalesce(${catalogFilters.subscribedAt}, ${new Date().toISOString()})` : null,
+          revision: sql`${catalogFilters.revision} + 1`,
+        }).where(match).returning();
+        if (!rows.length) throw conflict();
       } else if (update.action === 'edit') {
         const filterJson = JSON.stringify(update.filters);
         const rows = await db.update(catalogFilters).set({
           name: update.name, filterJson,
           revision: sql`${catalogFilters.revision} + 1`,
+          subscribedAt: sql`case when ${catalogFilters.filterJson} <> ${filterJson}
+            and ${catalogFilters.subscribedAt} is not null then ${new Date().toISOString()} else ${catalogFilters.subscribedAt} end`,
           viewedThrough: sql`case when ${catalogFilters.filterJson} = ${filterJson}
             then ${catalogFilters.viewedThrough} else ${new Date().toISOString()} end`,
         }).where(match).returning();
