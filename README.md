@@ -43,11 +43,14 @@ npm run dev
 | [新浪集团](https://app.mokahr.com/campus-recruitment/sina/43536) | [岚图汽车](https://app.mokahr.com/campus-recruitment/voyah/146293) |
 | [卓尔摄影](https://app.mokahr.com/campus-recruitment/kfconcept/144795) | |
 
-未关注的来源默认每天核验，已关注的公司默认每 6 小时更新一次。使用「关注的公司」可以调整频率或暂停全部定时更新。关掉网页后，本地服务仍会继续更新。来源同步失败时会保留上次成功的结果，并提供手动重试。
+本地启动后会立刻分批核验内置来源，无需导入或关注公司。未关注的来源默认每天核验，已关注的公司默认每 6 小时更新一次。使用「关注的公司」可以调整频率或暂停全部定时更新。关掉网页后，本地服务仍会继续更新。来源同步失败时会保留上次成功的结果，并提供手动重试。
 
 「通知」也汇总明确截止日期的待投递岗位、到期或逾期的跟进，以及 24 小时内的面试和笔试。打开工作台后可查看，也可按类型关闭。通知已读状态和设置随本地数据库持久化。
 
 字节跳动中国校招暂未接入。[字节跳动国际站 · 西雅图机器学习实习](https://joinbytedance.com/search?keyword=Machine%20Learning%20Engineer%20Intern&location_code_list=CT_157)
+
+
+部署到 Cloudflare Workers 时，生产构建带有每分钟检查到期来源的 Cron Trigger。共享目录每个来源成功同步后间隔 6 小时再检查，失败保留旧结果并稍后重试。用户可以直接浏览共享目录，页面会自动显示新同步的结果。部署平台需保留构建配置中的 Cron Trigger 和 `CATALOG_CRON` 变量。
 
 ## 本地数据与升级
 
@@ -60,7 +63,7 @@ npm run dev
 工作台使用 React、TypeScript 和 Vinext，数据通过 Drizzle 写入 Cloudflare D1，简历文件存储在 R2。本地运行时使用本机的 D1 和 R2 模拟环境，岗位依然从招聘官网实时获取。
 
 - **接入招聘来源**可从 [目录适配器](lib/catalog/) 开始。提交前请核验官网列表、分页、职位详情与开放状态。
-- **运行测试**使用 `npm test`。构建后，执行 `CATALOG_LOCAL_LIVE=1 npm run test:m1:integration` 可在临时数据库中同步知乎与迅雷，验证目录和筛选。设置 `CATALOG_DISCOVERY_LIVE=1` 可验证零关注时腾讯和字节跳动的官网发现、分页和入库。设置 `CATALOG_NVIDIA_LIVE=1` 可单独验收 Workday 分页、详情和 D1 入库数量。设置 `CATALOG_P0_LIVE=1` 可验收新浪集团、岚图汽车和卓尔摄影的官网入库。
+- **运行测试**使用 `npm test`。构建后，执行 `CATALOG_LOCAL_LIVE=1 npm run test:m1:integration` 可在临时数据库中同步知乎与迅雷，验证目录和筛选。设置 `CATALOG_DISCOVERY_LIVE=1` 可验证零关注时腾讯和字节跳动的官网发现、分页和入库。设置 `CATALOG_NVIDIA_LIVE=1` 可单独验收 Workday 分页、详情和 D1 入库数量。设置 `CATALOG_P0_LIVE=1` 可验收新浪集团、岚图汽车和卓尔摄影的官网入库。设置 CATALOG_CRON_LIVE=1 可验证共享目录的后台同步与普通用户分页。
 - **查看实现**可读 [岗位目录与 API](docs/m2-catalog.md)，或直接浏览 [接口代码](app/api/) 和 [数据库结构](db/schema.ts)。
 - **反馈问题**请开 [GitHub Issue](https://github.com/qyf700/job-tracker/issues)。同步问题请附公司名、官网链接和错误提示。
 

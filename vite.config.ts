@@ -64,7 +64,10 @@ export default defineConfig(async ({ command }) => {
         inspectorPort: false,
         config: {
           ...localBindingConfig,
-          ...(localCatalog ? { vars: { LOCAL_CATALOG: "1" } } : {}),
+          ...(command === "build" ? {
+            vars: { CATALOG_CRON: "1" },
+            triggers: { crons: ["* * * * *"] },
+          } : localCatalog ? { vars: { LOCAL_CATALOG: "1" } } : {}),
           ...(command === "serve"
             ? {
                 services: [

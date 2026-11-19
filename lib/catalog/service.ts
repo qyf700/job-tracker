@@ -41,12 +41,13 @@ export async function sourceSummary(userId:string){
  const latestIds = rows.flatMap(row => [row.leaseRunId, row.lastRunId].filter((id): id is string => !!id));
  const latest = latestIds.length ? await db.select().from(catalogSyncRuns).where(inArray(catalogSyncRuns.id, latestIds)) : [];
  const canSchedule = canScheduleCatalog(userId);
+ const autoRefresh = canSchedule || env.CATALOG_CRON === '1';
  const now = Date.now();
  const sources = catalogSources.map(source => {
   const row = rows.find(item => item.id === source.id);
   const selected = canSchedule && preferences.sourceIds.includes(source.id);
-  const interval = discoveryInterval(preferences.intervalHours, selected);
-  const next = canSchedule ? nextSourceSync(row, interval, now) : null;
+  const interval = canSchedule ? discoveryInterval(preferences.intervalHours, selected) : sharedRefreshHours;
+  const next = autoRefresh ? nextSourceSync(row, interval, now) : null;
   const running = !!row?.leaseRunId && !!row.leaseExpiresAt && Date.parse(row.leaseExpiresAt) > now;
   const lastRun = latest.find(run => run.id === row?.lastRunId);
   const runningRun = running ? latest.find(run => run.id === row?.leaseRunId) : undefined;
@@ -61,10 +62,14 @@ export async function sourceSummary(userId:string){
    latestRun: runningRun ?? lastRun ?? null,
   };
  });
- return {canSync: isCatalogAdmin(userId), canSchedule, preferences, sources, runs};
+ return {canSync: isCatalogAdmin(userId), canSchedule, autoRefresh, preferences, sources, runs};
 }
 export async function syncSource(userId:string,id:string){
  if(!isCatalogAdmin(userId))throw new CatalogError('forbidden','只有目录管理员可以触发同步',403);
+ return refreshSource(id);
+}
+
+async function refreshSource(id: string) {
  const source=catalogSources.find(candidate=>candidate.id===id);
  if(!source)throw new CatalogError('source_not_found','来源不存在',404);
  await ensureSource(source);const db=getDb(),runId=crypto.randomUUID(),startedAt=new Date().toISOString();
@@ -109,30 +114,41 @@ export async function syncSource(userId:string,id:string){
   throw known;
  }
 }
+const sharedRefreshHours = 6;
+
 function discoveryInterval(followedInterval: number, followed: boolean) {
  return followed || !followedInterval ? followedInterval : 24;
 }
 
 export async function syncDueSources(userId: string, initialOnly: boolean) {
- const preferences = await readCatalogSettings(userId);
- if (!initialOnly && !preferences.intervalHours) return [];
+ if (!canScheduleCatalog(userId)) throw new CatalogError('forbidden', '此实例未启用本地自动同步', 403);
+ const {sourceIds, intervalHours} = await readCatalogSettings(userId);
+ return refreshDueSources(sourceIds, intervalHours, initialOnly, true);
+}
+
+export function refreshSharedCatalog() {
+ return refreshDueSources([], sharedRefreshHours, false, false);
+}
+
+async function refreshDueSources(sourceIds: string[], intervalHours: number, initialOnly: boolean, local: boolean) {
+ if (!initialOnly && !intervalHours) return [];
 
  const sources = await getDb().select().from(companySources);
  const now = Date.now();
  const results = [];
  const knownSources = new Map(sources.map(source=>[source.id,source]));
- const followedIds = new Set(preferences.sourceIds);
+ const followedIds = new Set(sourceIds);
  const candidates = catalogSources.flatMap(({id})=>{
   const followed = followedIds.has(id);
   if(initialOnly && !followed)return [];
   const source = knownSources.get(id);
-  const next = nextSourceSync(source, discoveryInterval(preferences.intervalHours,followed), now, initialOnly);
+  const next = nextSourceSync(source, local ? discoveryInterval(intervalHours,followed) : intervalHours, now, initialOnly);
   return next!==null && next<=now ? [{id,followed,next}] : [];
  }).sort((a,b)=>Number(b.followed)-Number(a.followed)||a.next-b.next);
  // Keep background discovery bounded. The next tick handles the remaining companies.
  for (const {id} of initialOnly ? candidates : candidates.slice(0,2)) {
   try {
-   results.push({sourceId: id, ...await syncSource(userId, id)});
+   results.push({sourceId: id, ...await refreshSource(id)});
   } catch (error) {
    if (error instanceof CatalogError && ['sync_running', 'sync_cooldown'].includes(error.code)) continue;
    results.push({sourceId: id, state: 'failed'});
@@ -143,7 +159,8 @@ export async function syncDueSources(userId: string, initialOnly: boolean) {
 
 const querySchema = filterSchema.extend({
  limit: z.coerce.number().int().min(1).max(100).default(20),
- cursor: z.string().max(300).default(''),
+ cursor: z.string().max(400).default(''),
+ sort: z.enum(['id', 'recent']).default('id'),
  newOnly: z.enum(['0', '1']).default('0'),
  filterId: z.string().uuid().optional(),
  discoverySince: z.string().datetime().optional(),
@@ -209,8 +226,27 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
  if (p.newOnly === '1' && activeFilter) {
   clauses.push(gt(jobs.firstSeenAt, activeFilter.viewedThrough), lte(jobs.firstSeenAt, observedAt));
  }
- if(p.cursor){let id;try{id=z.object({id:z.string().min(1).max(150)}).strict().parse(JSON.parse(atob(p.cursor))).id;}catch{throw new CatalogError('invalid_cursor','分页标识无效',422);}clauses.push(gt(jobs.id,id));}
- const rows=await db.select().from(jobs).where(and(...clauses)).orderBy(asc(jobs.id)).limit(p.limit+1),hasMore=rows.length>p.limit,items=rows.slice(0,p.limit);
+ const openedAt = sql<string>`max(${jobs.firstSeenAt}, coalesce(${jobs.reopenedAt}, ${jobs.firstSeenAt}))`;
+ const recent = p.sort === 'recent';
+ if (p.cursor) {
+  try {
+   const cursor = z.object({id:z.string().min(1).max(150), at:z.string().datetime().optional()})
+    .strict().parse(JSON.parse(atob(p.cursor)));
+   if (recent !== !!cursor.at) throw new Error('cursor sort changed');
+   clauses.push(cursor.at
+    ? or(lt(openedAt,cursor.at),and(eq(openedAt,cursor.at),gt(jobs.id,cursor.id)))
+    : gt(jobs.id,cursor.id));
+  } catch {
+   throw new CatalogError('invalid_cursor','分页标识无效',422);
+  }
+ }
+ const rows=await db.select().from(jobs).where(and(...clauses))
+  .orderBy(...(recent ? [desc(openedAt),asc(jobs.id)] : [asc(jobs.id)])).limit(p.limit+1);
+ const hasMore=rows.length>p.limit,items=rows.slice(0,p.limit);
+ const last=items.at(-1);
+ const nextCursor=hasMore&&last ? btoa(JSON.stringify({id:last.id,
+  ...(recent ? {at:last.reopenedAt && last.reopenedAt>last.firstSeenAt ? last.reopenedAt : last.firstSeenAt} : {}),
+ })) : null;
  const saved=new Map((await applicationProgress(ownerId,items.map(job=>job.id))).map(row=>[row.jobId,row]));
  const discoverySince = p.discoverySince && p.discoverySince<=observedAt
   ? p.discoverySince : new Date(Date.parse(observedAt)-7*86400000).toISOString();
@@ -233,7 +269,7 @@ export async function listJobs(params:URLSearchParams,ownerId:string){
   stale: sql<number>`sum(case when ${jobs.availability} <> 'closed' and ${jobs.lastVerifiedAt} < ${threshold} then 1 else 0 end)`,
   lastVerifiedAt: sql<string | null>`max(${jobs.lastVerifiedAt})`,
  }).from(companies).leftJoin(jobs, eq(jobs.companyId, companies.id)).groupBy(companies.id, companies.name);
- return {companyTotals,discoverySince,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.get(row.id)?.applicationId??null,applicationProgress:saved.get(row.id)??null})),nextCursor:hasMore?btoa(JSON.stringify({id:items[items.length-1].id})):null,sourceHealth};
+ return {companyTotals,discoverySince,newCount,filterCounts:counts,observedAt,items:items.map(row=>({...publicJob(row),isNew:!!activeFilter&&row.firstSeenAt>activeFilter.viewedThrough&&row.firstSeenAt<=observedAt,savedApplicationId:saved.get(row.id)?.applicationId??null,applicationProgress:saved.get(row.id)??null})),nextCursor,sourceHealth};
 }
 export async function jobDetail(id:string,ownerId:string){const db=getDb(),row=(await db.select().from(jobs).where(eq(jobs.id,id)))[0];if(!row)throw new CatalogError('job_not_found','岗位不存在',404);const [saved]=await applicationProgress(ownerId,[id]);return {...publicJob(row,true),savedApplicationId:saved?.applicationId??null,applicationProgress:saved??null};}
 export async function saveJob(id:string,ownerId:string){

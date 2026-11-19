@@ -11,7 +11,7 @@ import {fixture,multiPageFixture} from './pdf-fixture.mjs';
 import {parseInterviewMail} from '../lib/interview-mail.ts';
 import {localDateTime} from '../lib/interviews.ts';
 const dir=await mkdtemp(resolve('.sites-runtime/m1-isolation-'));
-const config=resolve('dist/server/wrangler.json');
+let config=resolve('dist/server/wrangler.json');
 const wrangler=resolve('node_modules/wrangler/bin/wrangler.js');
 let worker,logs='',checks=0;
 function command(args){return new Promise((res,rej)=>{const p=spawn(process.execPath,[wrangler,...args],{env:process.env,stdio:['ignore','pipe','pipe']});let output='';p.stdout.on('data',b=>output+=b);p.stderr.on('data',b=>output+=b);p.on('error',rej);p.on('exit',code=>code===0?res(output):rej(new Error(output)));});}
@@ -36,6 +36,14 @@ async function call(identity,path,method='GET',body,expected=200,extra={}){
 async function data(...args){return(await call(...args)).json();}
 function upload(id,label='isolation fixture',bytes=fixture(),name='fixture.pdf'){const form=new FormData();form.append('id',id);form.append('label',label);form.append('file',new File([bytes],name,{type:'application/pdf'}));return form;}
 try{
+ if(process.env.CATALOG_CRON_LIVE==='1'){
+  // The local static asset router only forwards HTTP requests. Trigger the built Worker directly.
+  const built=JSON.parse(await readFile(config,'utf8'));
+  delete built.assets;
+  built.main=resolve('dist/server',built.main);
+  config=resolve(dir,'wrangler-cron.json');
+  await writeFile(config,JSON.stringify(built));
+ }
  const migrations=(await readdir('drizzle')).filter(x=>x.endsWith('.sql')).sort();
  const legacyFilterId=randomUUID();
  const legacySettings=`INSERT INTO catalog_preferences
@@ -45,7 +53,7 @@ try{
  schema.splice(migrations.findIndex(x=>x.startsWith('0008_')),0,legacySettings);
  await writeFile(dir+'/schema.sql',schema.join('\n'));
  await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--file',dir+'/schema.sql']);
- worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0','--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A',...((process.env.CATALOG_LOCAL_LIVE==='1'||process.env.CATALOG_DISCOVERY_LIVE==='1')?['--var','LOCAL_CATALOG:1']:[])],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
+ worker=spawn(process.execPath,[wrangler,'dev','--config',config,'--local','--persist-to',dir,'--ip','127.0.0.1','--port',String(port),'--inspector-port','0',...(process.env.CATALOG_CRON_LIVE==='1'?['--test-scheduled']:[]),'--var','CATALOG_ADMIN_USER_ID:m1-test-owner-A',...((process.env.CATALOG_LOCAL_LIVE==='1'||process.env.CATALOG_DISCOVERY_LIVE==='1')?['--var','LOCAL_CATALOG:1']:[])],{env:{...process.env,BROWSER:'none'},stdio:['ignore','pipe','pipe']});
  worker.stdout.on('data',b=>logs+=b);worker.stderr.on('data',b=>logs+=b);
  let ready=false;for(let i=0;i<120;i++){try{await fetch(origin+'/api/health');ready=true;break;}catch{await new Promise(r=>setTimeout(r,250));}}assert.ok(ready,'workerd failed to start: '+logs);
  const preferencePath='/api/catalog/preferences';
@@ -74,6 +82,32 @@ try{
  assert.equal(migrated.activeFilterId,legacyFilterId);
  assert.equal(migrated.savedFilters[0].name,'原有筛选');
  assert.equal(migrated.savedFilters[0].viewedThrough,'2000-01-01T00:00:00.000Z');
+ if(process.env.CATALOG_CRON_LIVE==='1'){
+  const before=await data(B,'/api/companies');
+  assert.equal(before.canSync,false);
+  assert.equal(before.autoRefresh,true);
+  assert.deepEqual(before.preferences.sourceIds,[]);
+  const selected=new Set(['sina-moka-campus','kfconcept-moka-campus']);
+  const blocked=before.sources.filter(source=>!selected.has(source.id)).map(source=>
+   `INSERT INTO companies (id,name,official_careers_url,created_at,updated_at)
+     VALUES ('${source.companyId}','fixture','https://example.test','2000','2000') ON CONFLICT DO NOTHING;
+    INSERT INTO company_sources (id,company_id,adapter_key,entry_url,last_success_at)
+     VALUES ('${source.id}','${source.companyId}','fixture','https://example.test','2099-01-01T00:00:00.000Z') ON CONFLICT DO NOTHING;`
+  );
+  await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--command',blocked.join('\n')]);
+  const tick=await fetch(origin+'/cdn-cgi/handler/scheduled?cron='+encodeURIComponent('* * * * *'), {signal:AbortSignal.timeout(120_000)});
+  assert.ok(tick.ok,`Scheduled Worker returned ${tick.status}: ${(await tick.text()).slice(0,250)}`);
+  const after=await data(B,'/api/companies');
+  for(const id of selected){
+   assert.ok(after.sources.find(source=>source.id===id)?.lastSuccessAt,id+' should sync without a user');
+  }
+  const page=await data(B,'/api/jobs?sort=recent&limit=2');
+  const next=await data(B,'/api/jobs?sort=recent&limit=2&cursor='+encodeURIComponent(page.nextCursor));
+  assert.ok(next.items.length>0);
+  assert.ok(next.items.every(item=>!page.items.some(previous=>previous.id===item.id)));
+  assert.ok(page.items.at(-1).firstSeenAt>=next.items[0].firstSeenAt);
+  console.log('LIVE CATALOG CRON: shared refresh without user preferences and recent pagination passed.');
+ }
  if(process.env.CATALOG_DISCOVERY_LIVE==='1'){
   await data(local,preferencePath,'PUT',{action:'sources',settings:{sourceIds:[],intervalHours:6}});
   const empty=await data(local,'/api/jobs?limit=1');
