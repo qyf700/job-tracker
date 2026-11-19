@@ -385,69 +385,6 @@ try{
   }
   console.log(`LIVE CATALOG: ${run.seenCount} real official jobs verified, persisted, queried and isolated.`);
  }
- if(process.env.CATALOG_P0_LIVE==='1'){
-  for(const [source,company] of [['sina-moka-campus','sina'],['voyah-moka-campus','voyah'],['kfconcept-moka-campus','kfconcept']]){
-   const run=await data(A,'/api/catalog/sources/'+source+'/sync','POST');
-   const result=await data(A,'/api/jobs?companyId='+company+'&limit=100');
-   assert.equal(run.state,'succeeded');
-   assert.equal(result.items.length,run.seenCount);
-   assert.ok(result.items.some(item=>item.availability==='accepting'));
-   assert.ok(result.items.every(item=>item.companyId===company&&new URL(item.originalUrl).hostname==='app.mokahr.com'));
-   console.log('LIVE P0:',company,run.seenCount,'official jobs stored');
-  }
- }
- await call({},'/api/notifications','GET',undefined,401);
- const createSubscription=async name=>{
-  const settings=await data(A,preferencePath,'PUT',{action:'create',name,filters:{companyId:'p0-fixture',q:'后端'}});
-  const filter=settings.savedFilters.find(item=>item.id===settings.activeFilterId);
-  const request={action:'subscribe',filterId:filter.id,revision:filter.revision,enabled:true};
-  await call(B,preferencePath,'PUT',request,409);
-  return (await data(A,preferencePath,'PUT',request)).savedFilters.find(item=>item.id===filter.id);
- };
- const first=await createSubscription('提醒验收一');
- const second=await createSubscription('提醒验收二');
- const observed=new Date().toISOString();
- const old=new Date(Date.now()-86_400_000).toISOString();
- const deadline=new Date(Date.now()+36_000_000).toISOString();
- await command(['d1','execute','DB','--local','--config',config,'--persist-to',dir,'--command',`
-  INSERT INTO companies VALUES ('p0-fixture','提醒验收','https://example.test','${observed}','${observed}');
-  INSERT INTO company_sources (id,company_id,adapter_key,entry_url)
-   VALUES ('p0-fixture','p0-fixture','fixture','https://example.test');
-  INSERT INTO jobs (id,source_id,external_job_id,company_id,title,department,locations_json,employment_type,
-   program_kind,graduation_label,source_category,jd_text,original_url,apply_url,deadline_at,availability,
-   evidence_json,content_hash,first_seen_at,last_seen_at,last_verified_at,last_seen_run_id,reopened_at)
-  VALUES
-   ('p0-new','p0-fixture','new','p0-fixture','后端实习','','[]','intern','unknown','','','','https://example.test/job','https://example.test/job','${deadline}','accepting','{}','fixture','${observed}','${observed}','${observed}','fixture',null),
-   ('p0-old','p0-fixture','old','p0-fixture','后端旧岗位','','[]','intern','unknown','','','','https://example.test/job','https://example.test/job',null,'accepting','{}','fixture','${old}','${observed}','${observed}','fixture',null),
-   ('p0-reopened','p0-fixture','reopened','p0-fixture','后端重新开放','','[]','intern','unknown','','','','https://example.test/job','https://example.test/job',null,'accepting','{}','fixture','${old}','${observed}','${observed}','fixture','${observed}'),
-   ('p0-other','p0-fixture','other','p0-fixture','设计实习','','[]','intern','unknown','','','','https://example.test/job','https://example.test/job',null,'accepting','{}','fixture','${observed}','${observed}','${observed}','fixture',null);
- `]);
- const savedP0=await data(A,'/api/jobs/p0-new/save','POST');
- const appPath='/api/applications/'+savedP0.applicationId;
- const amended=await data(A,appPath,'PATCH',{version:1,nextAction:'联系招聘方',dueDate:'2020-01-01'});
- const interviewStart=new Date(Date.now()+3_600_000).toISOString();
- const interviewEnd=new Date(Date.now()+7_200_000).toISOString();
- const interviewP0={applicationId:savedP0.applicationId,kind:'interview',round:'提醒验收一面',startsAt:interviewStart,endsAt:interviewEnd};
- const scheduleP0=await data(A,'/api/interviews','POST',interviewP0,201);
- const inbox=async identity=>(await data(identity,'/api/notifications')).items;
- let notifications=await inbox(A);
- const matches=notifications.filter(item=>item.kind==='job'&&item.company==='提醒验收');
- assert.deepEqual(matches.map(item=>item.title).sort(),['后端实习','后端重新开放']);
- assert.ok(matches.every(item=>item.filters.length===2));
- assert.deepEqual(notifications.filter(item=>item.applicationId===savedP0.applicationId).map(item=>item.kind).sort(),['deadline','follow_up','interview']);
- assert.ok(!(await inbox(B)).some(item=>item.company==='提醒验收'));
- await call(B,'/api/notifications','POST',{id:matches[0].id},404);
- await call(A,'/api/notifications','POST',{id:matches[0].id},204);
- await call(A,'/api/notifications','POST',{id:matches[0].id},204);
- assert.equal((await inbox(A)).find(item=>item.id===matches[0].id).read,true);
- await data(A,'/api/interviews/'+scheduleP0.id,'PATCH',{...interviewP0,version:scheduleP0.version,state:'cancelled'});
- await data(A,appPath,'PATCH',{version:amended.version,status:'applied',nextAction:''});
- notifications=await inbox(A);
- assert.ok(!notifications.some(item=>item.applicationId===savedP0.applicationId));
- for(const filter of [first,second]){
-  await data(A,preferencePath,'PUT',{action:'subscribe',filterId:filter.id,revision:filter.revision,enabled:false});
- }
- assert.ok(!(await inbox(A)).some(item=>item.company==='提醒验收'));
  console.log(`PASS: ${checks} HTTP checks against actual production Worker build, two isolated principals, D1 SQLite and R2; no production records changed.`);
 }catch(e){console.error(logs.slice(-6000));throw e;}finally{
  if(worker&&worker.exitCode===null){worker.kill('SIGTERM');await Promise.race([new Promise(r=>worker.once('exit',r)),new Promise(r=>setTimeout(r,2000))]);if(worker.exitCode===null)worker.kill('SIGKILL');}

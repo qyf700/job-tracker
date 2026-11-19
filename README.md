@@ -22,12 +22,12 @@ npm run dev
 打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)，点击登录即可进入本地工作台，无需 ChatGPT 账号。
 
 1. **发现正在招聘的公司。** 首次启动后，后台直接分批核验名单里的官网，无需先关注公司或手动同步。「正在招聘」展示已确认开放的公司，「最近新开」展示新收录或重新开放的岗位。初次查看显示近 7 天，也可以标记已查看。
-2. **保存筛选。** 例如选北京和上海，搜索「后端, AI 应用」，将条件保存为「后端实习」。每组筛选单独统计新增，可以只看本组新增，也可以标记为已查看。为保存的筛选开启订阅后，可在「通知」查看新收录和重新开放的匹配岗位。
+2. **保存筛选。** 例如选北京和上海，搜索「后端, AI 应用」，将条件保存为「后端实习」。每组筛选单独统计新增，可以只看本组新增，也可以标记为已查看。
 3. **跟进申请。** 将感兴趣的职位加入待投递，打开原文到公司官网申请，再回工作台更新投递状态、记录面试和待办。台账也支持更正实际投递时间，以及按到期情况筛选待跟进事项。收藏自目录的岗位会在台账里显示官网当前状态。官网自动投递目前暂停。
 
 ## 支持的招聘来源
 
-[内置来源名单](lib/catalog/sources.ts)目前包含 16 个招聘官网来源，覆盖 Moka 校招、NVIDIA 中国 Workday 实习、腾讯校招官网的「AI 全栈」和「后端开发」，以及字节跳动国际站的西雅图机器学习实习。每条职位都保留官网原文和最近核验时间，详情保留首次收录、最近重新开放和本次关闭的时间。批次与截止日期以官网信息为准。
+[内置来源名单](lib/catalog/sources.ts)目前包含 13 个企业官网招聘来源，覆盖 Moka 校招、NVIDIA 中国 Workday 实习、腾讯国内校招与实习，以及字节跳动国际站的西雅图机器学习实习。腾讯首批覆盖「AI 全栈」和「后端开发」。每条职位都保留官网原文和最近核验时间，详情保留首次收录、最近重新开放和本次关闭的时间。批次与截止日期以官网信息为准。
 
 | 招聘官网 | 招聘官网 |
 | --- | --- |
@@ -37,12 +37,8 @@ npm run dev
 | [搜狐](https://app.mokahr.com/campus-recruitment/sohu/5682) | [百奥家庭互动](https://app.mokahr.com/campus_apply/aobi/25016) |
 | [途虎养车](https://app.mokahr.com/campus-recruitment/tuhu/28398) | [凌云光](https://app.mokahr.com/campus_apply/lusterinc/44882) |
 | [NVIDIA 中国实习（Workday）](https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite?locationHierarchy1=2fcb99c455831013ea529fe151e3323c&workerSubType=0c40f6bd1d8f10adf6dae42e46d44a17) | [腾讯校招与实习（AI 全栈 / 后端开发）](https://join.qq.com/post.html) |
-| [新浪集团](https://app.mokahr.com/campus-recruitment/sina/43536) | [岚图汽车](https://app.mokahr.com/campus-recruitment/voyah/146293) |
-| [卓尔摄影](https://app.mokahr.com/campus-recruitment/kfconcept/144795) | |
 
 未关注的来源默认每天核验，已关注的公司默认每 6 小时更新一次。使用「关注的公司」可以调整频率或暂停全部定时更新。关掉网页后，本地服务仍会继续更新。来源同步失败时会保留上次成功的结果，并提供手动重试。
-
-「通知」也汇总明确截止日期的待投递岗位、到期或逾期的跟进，以及 24 小时内的面试和笔试。打开工作台后可查看，通知已读状态随本地数据库持久化。
 
 字节跳动中国校招暂未接入。[字节跳动国际站 · 西雅图机器学习实习](https://joinbytedance.com/search?keyword=Machine%20Learning%20Engineer%20Intern&location_code_list=CT_157)
 
