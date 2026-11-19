@@ -27,7 +27,7 @@ npm run dev
 
 ## 支持的招聘来源
 
-[内置来源名单](lib/catalog/sources.ts)目前包含 13 个企业官网招聘来源，覆盖 Moka 校招、NVIDIA 中国 Workday 实习、腾讯国内校招与实习，以及字节跳动国际站的西雅图机器学习实习。腾讯首批覆盖「AI 全栈」和「后端开发」。每条职位都保留官网原文和最近核验时间，详情保留首次收录、最近重新开放和本次关闭的时间。批次与截止日期以官网信息为准。
+[内置来源名单](lib/catalog/sources.ts)目前包含 15 个企业官网招聘来源，覆盖 Moka 校招、NVIDIA 中国 Workday 实习、腾讯国内校招与实习，以及字节跳动国际站的西雅图机器学习实习。新增美团北京 LongCat 与阿里巴巴杭州大模型评测的校招和实习岗位。腾讯首批覆盖「AI 全栈」和「后端开发」。每条职位都保留官网原文和最近核验时间，详情保留首次收录、最近重新开放和本次关闭的时间。批次与截止日期以官网信息为准。
 
 | 招聘官网 | 招聘官网 |
 | --- | --- |
@@ -37,6 +37,7 @@ npm run dev
 | [搜狐](https://app.mokahr.com/campus-recruitment/sohu/5682) | [百奥家庭互动](https://app.mokahr.com/campus_apply/aobi/25016) |
 | [途虎养车](https://app.mokahr.com/campus-recruitment/tuhu/28398) | [凌云光](https://app.mokahr.com/campus_apply/lusterinc/44882) |
 | [NVIDIA 中国实习（Workday）](https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite?locationHierarchy1=2fcb99c455831013ea529fe151e3323c&workerSubType=0c40f6bd1d8f10adf6dae42e46d44a17) | [腾讯校招与实习（AI 全栈 / 后端开发）](https://join.qq.com/post.html) |
+| [美团校招与实习（北京 LongCat）](https://zhaopin.meituan.com/web/campus) | [阿里巴巴校招与实习（杭州大模型评测）](https://campus-talent.alibaba.com/campus/position) |
 
 未关注的来源默认每天核验，已关注的公司默认每 6 小时更新一次。使用「关注的公司」可以调整频率或暂停全部定时更新。关掉网页后，本地服务仍会继续更新。来源同步失败时会保留上次成功的结果，并提供手动重试。
 
